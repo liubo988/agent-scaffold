@@ -11,7 +11,7 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, readdirSync, symlinkSync, lstatSync } from "node:fs";
 import { join, dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -965,210 +965,36 @@ function generateClaudeSettings(info) {
   // Deduplicate
   const uniqueAllow = [...new Set(allow)];
 
-  return JSON.stringify({ permissions: { allow: uniqueAllow } }, null, 2);
+  // Build settings with permissions + hooks
+  const settings = {
+    permissions: { allow: uniqueAllow },
+    hooks: {
+      Stop: [{
+        matcher: "",
+        hooks: [{
+          type: "command",
+          command: "echo '\\n⚠️  REMINDER: Update WIP.md and MEMORY.md with what you did this session before ending.'"
+        }]
+      }]
+    }
+  };
+
+  return JSON.stringify(settings, null, 2);
 }
 
-// --------------- Generate CLAUDE.md ---------------
-
-function generateClaudeMd(info, hasSignals) {
-  const lines = ["# Project Instructions", ""];
-
-  // Overview
-  lines.push("## Overview", "");
-  if (info.description) {
-    lines.push(info.description, "");
-  } else {
-    lines.push(`<!-- TODO: Add a one-line description of ${info.name} -->`, "");
-  }
-  if (info.language) {
-    const parts = [];
-    parts.push(`**Tech Stack**: ${info.language}`);
-    if (info.framework) parts[0] += ` / ${info.framework}`;
-    if (info.hasDocker) parts.push("Docker");
-    if (info.isMonorepo) parts.push(`Monorepo (${info.monorepoType})`);
-    lines.push(parts.join(" | "), "");
-  }
-
-  // REQUIRED: Memory Updates (placed at top for high visibility)
-  lines.push("## REQUIRED: Update Memory After Every Task", "");
-  lines.push("After completing ANY task, you MUST update these files before ending the conversation:", "");
-  lines.push("1. **`WIP.md`** — Record what was done, current status, next steps, and blockers");
-  lines.push("2. **`MEMORY.md`** — Add any new project facts, patterns, or preferences discovered");
-  lines.push("3. **`DECISIONS.md`** — Record any architecture or design decisions made (if applicable)", "");
-  lines.push("This is NOT optional. Even for small tasks, update at minimum `WIP.md` with a one-line summary.", "");
-
-  // Build & Dev
-  lines.push("## Build & Development Commands", "");
-  lines.push("```bash");
-  const cmds = [
-    ["Install dependencies", info.install],
-    ["Build", info.build],
-    ["Dev server", info.dev],
-    ["Run tests", info.test],
-    ["Lint", info.lint],
-    ["Format", info.format],
-    ["Type check", info.typecheck],
-  ];
-  for (const [label, cmd] of cmds) {
-    if (cmd) lines.push(`${cmd.padEnd(35)} # ${label}`);
-  }
-  lines.push("```", "");
-
-  // Monorepo workspace commands
-  if (info.isMonorepo && info.workspacePackages.length > 0) {
-    const pm = info.install ? info.install.split(" ")[0] : "npm";
-    lines.push("### Workspace Commands", "");
-    lines.push("```bash");
-    for (const wp of info.workspacePackages) {
-      const scripts = wp.scripts;
-      const wpCmds = [];
-      if (scripts.dev) wpCmds.push(`cd ${wp.dir} && ${pm} run dev`);
-      if (scripts.build) wpCmds.push(`cd ${wp.dir} && ${pm} run build`);
-      if (scripts.test) wpCmds.push(`cd ${wp.dir} && ${pm} test`);
-      if (scripts.lint) wpCmds.push(`cd ${wp.dir} && ${pm} run lint`);
-      if (wpCmds.length > 0) {
-        lines.push(`# ${wp.dir} (${wp.frameworks.join(" + ") || wp.languages.join(" + ")})`);
-        for (const c of wpCmds) lines.push(c);
-        lines.push("");
-      }
-    }
-    lines.push("```", "");
-  }
-
-  // Code Style
-  lines.push("## Code Style & Conventions", "");
-  if (info.language) lines.push(`- **Language**: ${info.language}`);
-  if (info.formatter) lines.push(`- **Formatter**: ${info.formatter}${info.format ? ` — run \`${info.format}\` before committing` : ""}`);
-  if (info.linter) lines.push(`- **Linter**: ${info.linter}${info.lint ? ` — run \`${info.lint}\`` : ""}`);
-  if (info.naming) lines.push(`- **Naming**: ${info.naming}`);
-  if (info.languages.includes("TypeScript")) {
-    lines.push("- Prefer strict typing; avoid `any`");
-  } else if (info.languages.includes("Python")) {
-    lines.push("- Use type hints; avoid `Any` — prefer explicit types");
-  }
-  lines.push("- Add brief comments for non-obvious logic");
-  lines.push("- Keep files focused; extract helpers when a file grows too large");
-  lines.push("");
-
-  // Framework conventions
-  if (info.frameworks.length > 0) {
-    const fwConventions = getFrameworkConventions(info.frameworks);
-    if (fwConventions.length > 0) {
-      lines.push("## Framework Conventions", "");
-      lines.push(...fwConventions);
-      lines.push("");
-    }
-  }
-
-  // Framework-specific footguns
-  if (info.frameworks.length > 0) {
-    const footguns = getFrameworkFootguns(info.frameworks, info);
-    if (footguns.length > 0) {
-      lines.push("## Known Pitfalls", "");
-      lines.push("Framework-specific gotchas — violating these causes subtle bugs:", "");
-      lines.push(...footguns);
-      lines.push("");
-    }
-  }
-
-  // Known Footguns placeholder (for project-specific issues to accumulate)
-  lines.push("## Known Footguns", "");
-  lines.push("<!-- Record project-specific pitfalls discovered during development.");
-  lines.push("   Each entry: what went wrong, why, and how to avoid it. Example:");
-  lines.push("   - GitHub comment escaping: use heredoc for bodies with backticks");
-  lines.push("   - API rate limit: batch requests to /api/search, max 10/min -->");
-  lines.push("");
-
-  // Testing
-  lines.push("## Testing", "");
-  if (info.testFramework) lines.push(`- **Framework**: ${info.testFramework}`);
-  if (info.test) lines.push(`- **Run**: \`${info.test}\``);
-  lines.push("- Run tests before pushing when you touch logic");
-  if (info.languages.includes("Python")) {
-    lines.push("- Test files in `tests/` directory (e.g. `test_foo.py` for `foo.py`)");
-  } else {
-    lines.push("- Test files colocated with source (e.g. `foo.test.ts` next to `foo.ts`) or in `tests/` directory");
-  }
-  if (info.testFrameworks.includes("Cypress") || info.testFrameworks.includes("Playwright")) {
-    lines.push(`- E2E tests: ${info.testFrameworks.filter(t => t === "Cypress" || t === "Playwright").join(" + ")}`);
-  }
-  lines.push("");
-
-  // Architecture
-  lines.push("## Project Structure", "");
-  lines.push("```");
-  lines.push(`${info.name}/`);
-  if (info.srcDirs.length > 0) {
-    for (const dir of info.srcDirs) {
-      lines.push(`├── ${dir.name.padEnd(20)} # ${dir.desc}`);
-    }
-  }
-  if (info.entryPoints.length > 0) {
-    for (const ep of info.entryPoints) {
-      lines.push(`├── ${ep.padEnd(20)} # entry point`);
-    }
-  }
-  if (info.hasDocker) lines.push(`├── ${"Dockerfile".padEnd(20)} # container build`);
-  if (info.configFiles.length > 0) {
-    for (const cf of info.configFiles.slice(0, 5)) {
-      lines.push(`├── ${cf}`);
-    }
-  }
-  lines.push("```", "");
-
-  // Security
-  lines.push("## Security", "");
-  lines.push("- Never commit secrets, API keys, or credentials");
-  lines.push("- Use environment variables (`.env`) for sensitive config; ensure `.env` is in `.gitignore`");
-  lines.push("- Validate all external input; avoid SQL injection, XSS, and command injection");
-  lines.push("");
-
-  // Memory system
-  lines.push("## Memory System", "");
-  lines.push("This project uses file-system based memory for cross-session AI agent collaboration:", "");
-  lines.push("- `MEMORY.md` — Long-term project facts, patterns, and preferences");
-  lines.push("- `WIP.md` — Current task handoff (read at session start, update at session end)");
-  lines.push("- `DECISIONS.md` — Architecture Decision Records");
-  lines.push("- `memory/` — Daily session logs (`YYYY-MM-DD.md`)");
-  if (hasSignals) {
-    lines.push("- `signals/active/` — Active task signals (YAML); pick up open tasks here");
-    lines.push("- `signals/observations/` — Environment observations and tech debt notes");
-  }
-  lines.push("");
-
-  // Agent Work Protocol
-  lines.push("## Agent Work Protocol", "");
-  lines.push("1. **Session start**: Read `WIP.md` and `MEMORY.md` to understand current state");
-  if (hasSignals) {
-    lines.push("2. **Pick up work**: Scan `signals/active/` for open tasks; claim one by updating its YAML");
-  }
-  lines.push(`${hasSignals ? "3" : "2"}. **During work**: Record decisions in \`DECISIONS.md\`; update \`WIP.md\` at milestones`);
-  lines.push(`${hasSignals ? "4" : "3"}. **BEFORE ending conversation (MANDATORY)**:`);
-  lines.push("   - Update `WIP.md` — what was done, status, next steps, blockers");
-  lines.push("   - Update `MEMORY.md` — any new facts, patterns, or preferences discovered");
-  lines.push("   - If any design decisions were made, add entry to `DECISIONS.md`");
-  if (hasSignals) {
-    lines.push(`5. **Continuous iteration**: Archive completed signals; check \`signals/active/\` for the next task`);
-  }
-  lines.push("");
-
-  // Multi-Agent Safety
-  lines.push(MULTI_AGENT_SAFETY, "");
-
-  // Commit
-  lines.push("## Commit Guidelines", "");
-  lines.push("- Write concise, action-oriented commit messages (e.g. `feat: add user auth`, `fix: null pointer in parser`)");
-  lines.push("- Group related changes; avoid bundling unrelated refactors");
-  lines.push("- Run lint and tests before committing");
-  lines.push("");
-
-  return lines.join("\n");
-}
+// --------------- (CLAUDE.md is now a symlink to AGENTS.md) ---------------
 
 // --------------- Generate AGENTS.md ---------------
 
 function generateAgentsMd(info, hasSignals) {
-  const lines = ["# AGENTS.md", ""];
+  const lines = [
+    "# AGENTS.md",
+    "",
+    "<!-- Keep this file under 150 lines. For each rule, ask:",
+    '     "Would the agent make mistakes without this?" If not, remove it.',
+    "     Use @path/to/file to import detailed docs instead of inlining them. -->",
+    "",
+  ];
 
   // Project overview
   lines.push("## Project", "");
@@ -1276,6 +1102,16 @@ function generateAgentsMd(info, hasSignals) {
   lines.push("- Run lint + tests before every commit");
   lines.push("");
 
+  // Framework conventions
+  if (info.frameworks.length > 0) {
+    const fwConventions = getFrameworkConventions(info.frameworks);
+    if (fwConventions.length > 0) {
+      lines.push("## Framework Conventions", "");
+      lines.push(...fwConventions);
+      lines.push("");
+    }
+  }
+
   // Known Pitfalls (framework-specific)
   if (info.frameworks.length > 0) {
     const footguns = getFrameworkFootguns(info.frameworks, info);
@@ -1285,6 +1121,14 @@ function generateAgentsMd(info, hasSignals) {
       lines.push("");
     }
   }
+
+  // Known Footguns placeholder (for project-specific issues to accumulate)
+  lines.push("## Known Footguns", "");
+  lines.push("<!-- Record project-specific pitfalls discovered during development.");
+  lines.push("   Each entry: what went wrong, why, and how to avoid it. Example:");
+  lines.push("   - GitHub comment escaping: use heredoc for bodies with backticks");
+  lines.push("   - API rate limit: batch requests to /api/search, max 10/min -->");
+  lines.push("");
 
   // Infrastructure
   if (info.hasDocker || info.hasCi) {
@@ -1329,6 +1173,13 @@ function generateAgentsMd(info, hasSignals) {
   }
   lines.push("");
 
+  // Commit Guidelines
+  lines.push("## Commit Guidelines", "");
+  lines.push("- Write concise, action-oriented commit messages (e.g. `feat: add user auth`, `fix: null pointer in parser`)");
+  lines.push("- Group related changes; avoid bundling unrelated refactors");
+  lines.push("- Run lint and tests before committing");
+  lines.push("");
+
   return lines.join("\n");
 }
 
@@ -1366,15 +1217,7 @@ function cmdInit(targetDir, flags) {
   }
   console.log();
 
-  // Step 2: Generate CLAUDE.md
-  const claudeMdContent = generateClaudeMd(info, hasSignals);
-  if (createIfMissing(join(target, "CLAUDE.md"), claudeMdContent)) {
-    created++;
-  } else {
-    skipped++;
-  }
-
-  // Step 3: Generate AGENTS.md
+  // Step 2: Generate AGENTS.md (main file — industry standard, read by all agents)
   const agentsMdContent = generateAgentsMd(info, hasSignals);
   if (createIfMissing(join(target, "AGENTS.md"), agentsMdContent)) {
     created++;
@@ -1382,15 +1225,155 @@ function cmdInit(targetDir, flags) {
     skipped++;
   }
 
-  // Step 3b: Generate .claude/settings.json (project-level permissions)
-  if (info.test || info.lint || info.build) {
-    const claudeSettingsPath = join(target, ".claude", "settings.json");
-    if (createIfMissing(claudeSettingsPath, generateClaudeSettings(info))) {
+  // Step 3: CLAUDE.md → symlink to AGENTS.md (Claude Code reads CLAUDE.md)
+  const claudeMdPath = join(target, "CLAUDE.md");
+  if (!existsSync(claudeMdPath)) {
+    try {
+      symlinkSync("AGENTS.md", claudeMdPath);
+      log("Created: CLAUDE.md → AGENTS.md (symlink)");
       created++;
-    } else {
-      skipped++;
+    } catch {
+      // Fallback: write CLAUDE.md as copy if symlink fails (e.g. Windows)
+      if (createIfMissing(claudeMdPath, agentsMdContent)) {
+        log("Created: CLAUDE.md (copy — symlink not supported)");
+        created++;
+      }
     }
+  } else {
+    // Check if existing CLAUDE.md is already a symlink
+    try {
+      const stat = lstatSync(claudeMdPath);
+      if (stat.isSymbolicLink()) {
+        log("Skipped: CLAUDE.md (symlink already exists)");
+      } else {
+        log("Skipped: CLAUDE.md (file already exists — consider replacing with: ln -s AGENTS.md CLAUDE.md)");
+      }
+    } catch {
+      log("Skipped: CLAUDE.md (already exists)");
+    }
+    skipped++;
   }
+
+  // Step 3b: Generate .claude/settings.json (project-level permissions + hooks)
+  const claudeSettingsPath = join(target, ".claude", "settings.json");
+  if (createIfMissing(claudeSettingsPath, generateClaudeSettings(info))) {
+    created++;
+  } else {
+    skipped++;
+  }
+
+  if (!isSlim) {
+  // Step 3c: Generate .claude/skills/ with example skill
+  const skillsDir = join(target, ".claude", "skills", "fix-issue");
+  if (!existsSync(join(skillsDir, "SKILL.md"))) {
+    mkdirSync(skillsDir, { recursive: true });
+    const skillContent = `---
+name: fix-issue
+description: Analyze and fix a GitHub issue
+disable-model-invocation: true
+---
+Analyze and fix the GitHub issue: $ARGUMENTS.
+
+1. Use \`gh issue view\` to get the issue details
+2. Understand the problem described in the issue
+3. Search the codebase for relevant files
+4. Implement the necessary changes
+5. Write and run tests to verify the fix
+6. Ensure code passes linting and type checking
+7. Create a descriptive commit message
+8. Push and create a PR linking the issue
+`;
+    writeFileSync(join(skillsDir, "SKILL.md"), skillContent, "utf8");
+    log("Created: .claude/skills/fix-issue/SKILL.md (example skill)");
+    created++;
+  } else {
+    skipped++;
+  }
+
+  // Step 3d: Generate .claude/agents/ with example subagent
+  const agentsDir = join(target, ".claude", "agents");
+  const reviewerPath = join(agentsDir, "code-reviewer.md");
+  if (!existsSync(reviewerPath)) {
+    mkdirSync(agentsDir, { recursive: true });
+    const agentContent = `---
+name: code-reviewer
+description: Reviews code for quality, security, and best practices
+tools: Read, Grep, Glob
+---
+You are a senior engineer reviewing code. Check for:
+
+- Security vulnerabilities (injection, XSS, credential leaks)
+- Logic errors and edge cases
+- Performance issues
+- Code style consistency with the project conventions
+- Missing error handling
+
+Provide specific line references and suggested fixes.
+`;
+    writeFileSync(reviewerPath, agentContent, "utf8");
+    log("Created: .claude/agents/code-reviewer.md (example subagent)");
+    created++;
+  } else {
+    skipped++;
+  }
+
+  // Step 3e: Generate .github/instructions/copilot.instructions.md
+  const copilotDir = join(target, ".github", "instructions");
+  const copilotPath = join(copilotDir, "copilot.instructions.md");
+  if (!existsSync(copilotPath)) {
+    mkdirSync(copilotDir, { recursive: true });
+    const copilotLines = ["# Project Patterns", ""];
+    if (info.language) copilotLines.push(`- **Language**: ${info.language}${info.framework ? ` (${info.framework})` : ""}`);
+    if (info.install) copilotLines.push(`- **Package Manager**: ${info.install.split(" ")[0]}`);
+    copilotLines.push("- **Anti-Redundancy**: Search for existing implementations before creating new ones");
+    copilotLines.push("- **Imports**: Import directly from the original source, avoid re-export wrappers");
+    if (info.linter) copilotLines.push(`- **Linting**: ${info.linter} — fix all warnings`);
+    if (info.formatter) copilotLines.push(`- **Formatting**: ${info.formatter} — run before committing`);
+    if (info.languages.includes("TypeScript")) copilotLines.push("- **Typing**: Prefer strict typing; avoid `any`");
+    copilotLines.push("- **Tests**: Run tests before committing changes");
+    copilotLines.push("- **Security**: Never commit secrets, API keys, or credentials");
+    writeFileSync(copilotPath, copilotLines.join("\n"), "utf8");
+    log("Created: .github/instructions/copilot.instructions.md");
+    created++;
+  } else {
+    skipped++;
+  }
+
+  // Step 3f: Generate .github/pull_request_template.md
+  const prTemplatePath = join(target, ".github", "pull_request_template.md");
+  if (!existsSync(prTemplatePath)) {
+    mkdirSync(join(target, ".github"), { recursive: true });
+    const prTemplate = `## Summary
+
+- Problem:
+- What changed:
+- What did NOT change (scope boundary):
+
+## Change Type
+
+- [ ] Bug fix
+- [ ] Feature
+- [ ] Refactor
+- [ ] Docs
+- [ ] Chore/infra
+
+## Verification
+
+- [ ] Tests pass
+- [ ] Linting passes
+- [ ] Manually tested
+
+## Linked Issue
+
+- Closes #
+`;
+    writeFileSync(prTemplatePath, prTemplate, "utf8");
+    log("Created: .github/pull_request_template.md");
+    created++;
+  } else {
+    skipped++;
+  }
+  } // end !isSlim
 
   if (!isSlim) {
     // Step 4: Create core directories
@@ -1506,14 +1489,22 @@ function cmdDoctor(targetDir) {
 
   // Core files
   console.log("Core files:");
-  check("CLAUDE.md exists", existsSync(join(target, "CLAUDE.md")));
   check("AGENTS.md exists", existsSync(join(target, "AGENTS.md")));
+  check("CLAUDE.md exists", existsSync(join(target, "CLAUDE.md")));
 
-  // Check CLAUDE.md is not empty / has real content
+  // Check CLAUDE.md is symlink to AGENTS.md (v1.4.0+)
   if (existsSync(join(target, "CLAUDE.md"))) {
-    const content = readFileSync(join(target, "CLAUDE.md"), "utf8");
-    check("CLAUDE.md has content (> 100 chars)", content.length > 100);
-    check("CLAUDE.md has build commands", content.includes("```bash") && !content.includes("```bash\n```"), true);
+    try {
+      const stat = lstatSync(join(target, "CLAUDE.md"));
+      check("CLAUDE.md is symlink to AGENTS.md", stat.isSymbolicLink(), true);
+    } catch { /* ignore */ }
+  }
+
+  // Check AGENTS.md has real content
+  if (existsSync(join(target, "AGENTS.md"))) {
+    const content = readFileSync(join(target, "AGENTS.md"), "utf8");
+    check("AGENTS.md has content (> 100 chars)", content.length > 100);
+    check("AGENTS.md has build commands", content.includes("```bash") && !content.includes("```bash\n```"), true);
   }
 
   console.log("\nMemory system:");
@@ -1537,19 +1528,28 @@ function cmdDoctor(targetDir) {
   check(".claude/settings.json exists", existsSync(join(target, ".claude/settings.json")), true);
   if (existsSync(join(target, ".claude/settings.json"))) {
     try {
-      JSON.parse(readFileSync(join(target, ".claude/settings.json"), "utf8"));
+      const settings = JSON.parse(readFileSync(join(target, ".claude/settings.json"), "utf8"));
       check(".claude/settings.json is valid JSON", true);
+      check(".claude/settings.json has Stop hook (memory reminder)", !!(settings.hooks && settings.hooks.Stop), true);
     } catch {
       check(".claude/settings.json is valid JSON", false);
     }
   }
+  check(".claude/skills/ directory exists", existsSync(join(target, ".claude/skills")), true);
+  check(".claude/agents/ directory exists", existsSync(join(target, ".claude/agents")), true);
+
+  // GitHub integration
+  console.log("\nGitHub integration:");
+  check(".github/instructions/copilot.instructions.md exists", existsSync(join(target, ".github/instructions/copilot.instructions.md")), true);
+  check(".github/pull_request_template.md exists", existsSync(join(target, ".github/pull_request_template.md")), true);
 
   // Quality checks
   console.log("\nContent quality:");
-  if (existsSync(join(target, "CLAUDE.md"))) {
-    const content = readFileSync(join(target, "CLAUDE.md"), "utf8");
-    check("CLAUDE.md has Multi-Agent Safety section", content.includes("Multi-Agent Safety"), true);
-    check("CLAUDE.md has Known Pitfalls or Footguns section", content.includes("Known Pitfalls") || content.includes("Known Footguns"), true);
+  if (existsSync(join(target, "AGENTS.md"))) {
+    const content = readFileSync(join(target, "AGENTS.md"), "utf8");
+    check("AGENTS.md has Multi-Agent Safety section", content.includes("Multi-Agent Safety"), true);
+    check("AGENTS.md has Known Pitfalls or Footguns section", content.includes("Known Pitfalls") || content.includes("Known Footguns"), true);
+    check("AGENTS.md has memory update requirement", content.includes("Update Memory") || content.includes("MEMORY.md"), true);
   }
 
   // .gitignore
@@ -1640,8 +1640,13 @@ Examples:
   npx agent-scaffold install-skill             # Install as Claude Code skill
 
 What it creates (default):
-  CLAUDE.md, AGENTS.md, MEMORY.md, DECISIONS.md, WIP.md,
-  memory/, .gitignore updates
+  AGENTS.md (main), CLAUDE.md (symlink → AGENTS.md),
+  MEMORY.md, DECISIONS.md, WIP.md, memory/,
+  .claude/settings.json (permissions + hooks),
+  .claude/skills/, .claude/agents/,
+  .github/instructions/copilot.instructions.md,
+  .github/pull_request_template.md,
+  .gitignore updates
 
 With --signals:
   + signals/active/, signals/observations/, signals/archive/,
