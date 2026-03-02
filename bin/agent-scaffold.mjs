@@ -77,13 +77,13 @@ function getMemoryMdTemplate(info) {
   const lines = [
     "# Project Memory",
     "",
-    "AI Agent cross-session persistent knowledge base. Write durable facts discovered during sessions here.",
+    "## IMPORTANT — Every Agent MUST Update This File",
     "",
-    "## How to Use",
+    "After completing ANY task, you MUST add new facts, patterns, or preferences discovered during your work.",
+    "Do NOT leave this file unchanged — even one new fact is valuable for the next agent session.",
     "",
-    "- **When to write**: Persistent facts, user preferences, recurring patterns, important discoveries",
-    "- **When to remove**: Outdated info, corrected entries, or duplicates that have been merged",
-    "- **Who maintains**: Every Agent should review and update before ending a session",
+    "- **When to write**: After every task — project facts, user preferences, recurring patterns, important discoveries",
+    "- **When to remove**: Outdated info, corrected entries, or duplicates",
     "- **Session logs**: Daily detailed logs go in `memory/YYYY-MM-DD.md`",
     "",
     "## Project Facts",
@@ -164,7 +164,7 @@ function getWipMdTemplate(hasSignals) {
 
   return `# Work In Progress
 
-Cross-session task handoff. This file is the bridge between agent sessions.
+**IMPORTANT**: Every agent MUST update this file before ending a conversation. This is the bridge between sessions.
 
 ## Agent Protocol
 
@@ -172,34 +172,59 @@ ${sessionStart}
 2. **During work**: Update "Completed Steps" at important milestones
 ${sessionEnd}
 
+<!-- ===== EXAMPLE (delete this block after first real update) =====
+
 ## Current Task
 
-**Title**: <!-- One-line task description -->
-**Status**: not started | in progress | blocked | done
-**Priority**: low | medium | high | critical
+**Title**: Add user authentication endpoint
+**Status**: in progress
+**Started**: 2025-06-01
+
+## Context for Next Session
+
+Working on JWT-based auth. Created middleware in src/auth/middleware.ts.
+Stopped because: need to clarify token refresh strategy with team.
+Key files: src/auth/middleware.ts:25, src/routes/auth.ts
+
+## Completed Steps
+
+- [x] Created auth middleware with JWT validation
+- [x] Added login/register route handlers
+- [x] Wrote unit tests for token generation
+
+## Next Steps
+
+- [ ] Implement refresh token logic
+- [ ] Add rate limiting to auth endpoints
+- [ ] Update API docs
+
+## Blockers
+
+- Need team decision on refresh token expiry (1h vs 24h)
+
+===== END EXAMPLE ===== -->
+
+## Current Task
+
+**Title**:
+**Status**: not started
 **Branch**: \`main\`
 
 ## Context for Next Session
 
-<!-- What does the next agent need to know to continue? Include:
-- Current progress point
-- Why you stopped (time limit / blocked / waiting for feedback)
-- Key files and line numbers
-- Gotchas to watch out for -->
+
 
 ## Completed Steps
 
-<!-- Steps completed so far, in chronological order -->
+
 
 ## Next Steps
 
-<!-- What should be done next, in priority order -->
-<!-- - [ ] Step 1: ... -->
-<!-- - [ ] Step 2: ... -->
+
 
 ## Blockers
 
-<!-- Blocking issues and possible solutions -->`;
+`;
 }
 
 const SIGNALS_README = `# Signals — Signal-Driven Agent Collaboration
@@ -964,6 +989,14 @@ function generateClaudeMd(info, hasSignals) {
     lines.push(parts.join(" | "), "");
   }
 
+  // REQUIRED: Memory Updates (placed at top for high visibility)
+  lines.push("## REQUIRED: Update Memory After Every Task", "");
+  lines.push("After completing ANY task, you MUST update these files before ending the conversation:", "");
+  lines.push("1. **`WIP.md`** — Record what was done, current status, next steps, and blockers");
+  lines.push("2. **`MEMORY.md`** — Add any new project facts, patterns, or preferences discovered");
+  lines.push("3. **`DECISIONS.md`** — Record any architecture or design decisions made (if applicable)", "");
+  lines.push("This is NOT optional. Even for small tasks, update at minimum `WIP.md` with a one-line summary.", "");
+
   // Build & Dev
   lines.push("## Build & Development Commands", "");
   lines.push("```bash");
@@ -1105,14 +1138,17 @@ function generateClaudeMd(info, hasSignals) {
 
   // Agent Work Protocol
   lines.push("## Agent Work Protocol", "");
-  lines.push("1. **Session start**: Read `WIP.md` to understand current progress");
+  lines.push("1. **Session start**: Read `WIP.md` and `MEMORY.md` to understand current state");
   if (hasSignals) {
     lines.push("2. **Pick up work**: Scan `signals/active/` for open tasks; claim one by updating its YAML");
   }
   lines.push(`${hasSignals ? "3" : "2"}. **During work**: Record decisions in \`DECISIONS.md\`; update \`WIP.md\` at milestones`);
-  lines.push(`${hasSignals ? "4" : "3"}. **Session end**: Update \`WIP.md\` with progress, next steps, and blockers`);
+  lines.push(`${hasSignals ? "4" : "3"}. **BEFORE ending conversation (MANDATORY)**:`);
+  lines.push("   - Update `WIP.md` — what was done, status, next steps, blockers");
+  lines.push("   - Update `MEMORY.md` — any new facts, patterns, or preferences discovered");
+  lines.push("   - If any design decisions were made, add entry to `DECISIONS.md`");
   if (hasSignals) {
-    lines.push("5. **Continuous iteration**: Archive completed signals; check `signals/active/` for the next task");
+    lines.push(`5. **Continuous iteration**: Archive completed signals; check \`signals/active/\` for the next task`);
   }
   lines.push("");
 
@@ -1147,6 +1183,14 @@ function generateAgentsMd(info, hasSignals) {
     if (info.isMonorepo) stackParts.push(`Monorepo (${info.monorepoType})`);
     lines.push(`**Tech Stack**: ${stackParts.join(" / ")}`, "");
   }
+
+  // REQUIRED: Memory Updates (placed at top for high visibility)
+  lines.push("## REQUIRED: Update Memory After Every Task", "");
+  lines.push("After completing ANY task, you MUST update these files before ending the conversation:", "");
+  lines.push("1. **`WIP.md`** — Record what was done, current status, next steps, and blockers");
+  lines.push("2. **`MEMORY.md`** — Add any new project facts, patterns, or preferences discovered");
+  lines.push("3. **`DECISIONS.md`** — Record any architecture or design decisions made (if applicable)", "");
+  lines.push("This is NOT optional. Even for small tasks, update at minimum `WIP.md` with a one-line summary.", "");
 
   // Commands
   lines.push("## Commands", "");
@@ -1271,14 +1315,17 @@ function generateAgentsMd(info, hasSignals) {
 
   // Agent Work Protocol
   lines.push("## Agent Work Protocol", "");
-  lines.push("1. **Session start**: Read `WIP.md` to understand current progress");
+  lines.push("1. **Session start**: Read `WIP.md` and `MEMORY.md` to understand current state");
   if (hasSignals) {
     lines.push("2. **Pick up work**: Scan `signals/active/` for open tasks");
   }
   lines.push(`${hasSignals ? "3" : "2"}. **During work**: Record decisions in \`DECISIONS.md\`; update \`WIP.md\` at milestones`);
-  lines.push(`${hasSignals ? "4" : "3"}. **Session end**: Update \`WIP.md\` with progress, next steps, blockers`);
+  lines.push(`${hasSignals ? "4" : "3"}. **BEFORE ending conversation (MANDATORY)**:`);
+  lines.push("   - Update `WIP.md` — what was done, status, next steps, blockers");
+  lines.push("   - Update `MEMORY.md` — any new facts, patterns, or preferences discovered");
+  lines.push("   - If any design decisions were made, add entry to `DECISIONS.md`");
   if (hasSignals) {
-    lines.push("5. **Continuous iteration**: Archive completed signals; return to `signals/active/` for the next task");
+    lines.push(`5. **Continuous iteration**: Archive completed signals; return to \`signals/active/\` for the next task`);
   }
   lines.push("");
 
