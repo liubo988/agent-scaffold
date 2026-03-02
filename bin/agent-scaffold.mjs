@@ -4,13 +4,14 @@
  * agent-scaffold CLI
  *
  * Usage:
- *   npx agent-scaffold init [target-dir]     Initialize scaffold in target directory
- *   npx agent-scaffold install-skill         Install as Claude Code global skill
- *   npx agent-scaffold --help                Show help
+ *   npx agent-scaffold init [target-dir] [--signals] [--slim]
+ *   npx agent-scaffold doctor [target-dir]
+ *   npx agent-scaffold install-skill
+ *   npx agent-scaffold --help
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, readFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, readdirSync } from "node:fs";
 import { join, dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,54 +28,102 @@ const GITIGNORE_RULES = `.birth
 memory/.cache/
 signals/.lock`;
 
-const DIRS = [
-  "memory",
+// Core directories (always created)
+const CORE_DIRS = ["memory"];
+
+// Signal directories (only with --signals)
+const SIGNAL_DIRS = [
   "signals/active",
   "signals/observations",
   "signals/archive",
 ];
 
-const TEMPLATES = {
-  "MEMORY.md": `# Project Memory
+// --------------- Helpers ---------------
 
-AI Agent cross-session persistent knowledge base. Write durable facts discovered during sessions here.
+function log(msg) {
+  console.log(`[agent-scaffold] ${msg}`);
+}
 
-## How to Use
+function err(msg) {
+  console.error(`[agent-scaffold] ERROR: ${msg}`);
+  process.exit(1);
+}
 
-- **When to write**: Persistent facts, user preferences, recurring patterns, important discoveries
-- **When to remove**: Outdated info, corrected entries, or duplicates that have been merged
-- **Who maintains**: Every Agent should review and update before ending a session
-- **Session logs**: Daily detailed logs go in \`memory/YYYY-MM-DD.md\`
+function createIfMissing(filepath, content) {
+  if (existsSync(filepath)) {
+    log(`Exists, skipped: ${basename(filepath)}`);
+    return false;
+  }
+  mkdirSync(dirname(filepath), { recursive: true });
+  writeFileSync(filepath, content + "\n", "utf8");
+  log(`Created: ${basename(filepath)}`);
+  return true;
+}
 
-## Project Facts
+function parseFlags(args) {
+  const flags = { signals: false, slim: false };
+  const positional = [];
+  for (const arg of args) {
+    if (arg === "--signals") flags.signals = true;
+    else if (arg === "--slim") flags.slim = true;
+    else positional.push(arg);
+  }
+  return { flags, positional };
+}
 
-<!-- Persistent project-level facts. Examples: -->
-<!-- - Primary language: TypeScript (ESM) -->
-<!-- - Database: PostgreSQL 15, ORM: Prisma -->
-<!-- - Deployment: Docker + Kubernetes on AWS -->
-<!-- - API style: REST with OpenAPI spec -->
+// --------------- Templates ---------------
 
-## Learned Patterns
+function getMemoryMdTemplate(info) {
+  const lines = [
+    "# Project Memory",
+    "",
+    "AI Agent cross-session persistent knowledge base. Write durable facts discovered during sessions here.",
+    "",
+    "## How to Use",
+    "",
+    "- **When to write**: Persistent facts, user preferences, recurring patterns, important discoveries",
+    "- **When to remove**: Outdated info, corrected entries, or duplicates that have been merged",
+    "- **Who maintains**: Every Agent should review and update before ending a session",
+    "- **Session logs**: Daily detailed logs go in `memory/YYYY-MM-DD.md`",
+    "",
+    "## Project Facts",
+    "",
+  ];
 
-<!-- Code patterns, gotchas, best practices discovered. Examples: -->
-<!-- - Error handling uses AppError class (src/errors.ts) -->
-<!-- - Tests use msw for HTTP mocking, not manual fetch stubs -->
-<!-- - Config loaded via environment variables, never hardcoded -->
+  // Pre-fill detected facts instead of all HTML comments
+  const facts = [];
+  if (info.language) facts.push(`- Primary language: ${info.language}`);
+  if (info.framework) facts.push(`- Framework: ${info.framework}`);
+  if (info.install) facts.push(`- Package manager: ${info.install.split(" ")[0]}`);
+  if (info.testFramework) facts.push(`- Test framework: ${info.testFramework}`);
+  if (info.hasDocker) facts.push("- Deployment: Docker");
+  if (info.isMonorepo) facts.push(`- Monorepo: ${info.monorepoType || "yes"} (${info.workspaceNames.join(", ")})`);
 
-## User Preferences
+  if (facts.length > 0) {
+    lines.push(...facts);
+  } else {
+    lines.push("<!-- No project config detected. Add facts here as you discover them. -->");
+  }
 
-<!-- User/team preferences. Examples: -->
-<!-- - Prefer functional style, avoid classes where possible -->
-<!-- - Commit messages in English, PR descriptions in Chinese -->
-<!-- - Always run lint before committing -->
+  lines.push(
+    "",
+    "## Learned Patterns",
+    "",
+    "<!-- Code patterns, gotchas, best practices discovered during sessions -->",
+    "",
+    "## User Preferences",
+    "",
+    "<!-- User/team preferences for coding style, workflow, communication -->",
+    "",
+    "## Known Issues",
+    "",
+    "<!-- Known issues and workarounds -->",
+  );
 
-## Known Issues
+  return lines.join("\n");
+}
 
-<!-- Known issues and workarounds. Examples: -->
-<!-- - CI OOMs on arm64, set NODE_OPTIONS=--max-old-space-size=4096 -->
-<!-- - Hot reload breaks when editing config files, restart dev server -->`,
-
-  "DECISIONS.md": `# Design Decisions
+const DECISIONS_MD = `# Design Decisions
 
 Architecture Decision Records (ADR). Record important design decisions here. Newest first.
 
@@ -103,17 +152,25 @@ Architecture Decision Records (ADR). Record important design decisions here. New
 
 ---
 
-<!-- Add decisions below, newest first -->`,
+<!-- Add decisions below, newest first -->`;
 
-  "WIP.md": `# Work In Progress
+function getWipMdTemplate(hasSignals) {
+  const sessionStart = hasSignals
+    ? "1. **Session start**: Read this file + scan `signals/active/` for open tasks"
+    : "1. **Session start**: Read this file to understand current progress";
+  const sessionEnd = hasSignals
+    ? "3. **Session end**: Update ALL fields below so the next agent can continue seamlessly; archive completed signals"
+    : "3. **Session end**: Update ALL fields below so the next agent can continue seamlessly";
+
+  return `# Work In Progress
 
 Cross-session task handoff. This file is the bridge between agent sessions.
 
 ## Agent Protocol
 
-1. **Session start**: Read this file + scan \`signals/active/\` for open tasks
+${sessionStart}
 2. **During work**: Update "Completed Steps" at important milestones
-3. **Session end**: Update ALL fields below so the next agent can continue seamlessly
+${sessionEnd}
 
 ## Current Task
 
@@ -121,7 +178,6 @@ Cross-session task handoff. This file is the bridge between agent sessions.
 **Status**: not started | in progress | blocked | done
 **Priority**: low | medium | high | critical
 **Branch**: \`main\`
-**Related Signal**: <!-- signals/active/xxx.yaml if applicable -->
 
 ## Context for Next Session
 
@@ -143,9 +199,10 @@ Cross-session task handoff. This file is the bridge between agent sessions.
 
 ## Blockers
 
-<!-- Blocking issues and possible solutions -->`,
+<!-- Blocking issues and possible solutions -->`;
+}
 
-  "signals/README.md": `# Signals — Signal-Driven Agent Collaboration
+const SIGNALS_README = `# Signals — Signal-Driven Agent Collaboration
 
 Cross-session agent communication based on stigmergy (biological pheromone) patterns.
 
@@ -179,8 +236,6 @@ resolved_at: ""
 \`\`\`
 
 ## Agent Work Loop (Continuous Iteration)
-
-Agents follow this cycle for continuous work:
 
 ### 1. Read Signals
 - Scan \`signals/active/\` for all \`.yaml\` files
@@ -218,9 +273,9 @@ Observations don't need to be claimed; they are passive knowledge for any agent.
 
 - Tasks unclaimed for 7+ days → review if still needed
 - Archived signals older than 30 days → can be cleaned up
-- Observations are long-lived; remove only when resolved`,
+- Observations are long-lived; remove only when resolved`;
 
-  "signals/active/_example-task.yaml": `id: example-task
+const EXAMPLE_TASK_YAML = `id: example-task
 type: task
 author: human
 created: 2026-01-01T00:00:00Z
@@ -235,9 +290,9 @@ acceptance: |
   - Tests pass
 claimed_by: ""
 claimed_at: ""
-resolved_at: ""`,
+resolved_at: ""`;
 
-  "signals/observations/_example-observation.yaml": `id: example-observation
+const EXAMPLE_OBS_YAML = `id: example-observation
 type: observation
 author: agent
 created: 2026-01-01T00:00:00Z
@@ -247,28 +302,7 @@ tags: [example]
 context: |
   This is an example observation signal. Replace or delete this file.
   Agents create observations when they notice issues, patterns, or tech debt.
-  Observations don't need to be claimed — they are passive knowledge.`,
-};
-
-function log(msg) {
-  console.log(`[agent-scaffold] ${msg}`);
-}
-
-function err(msg) {
-  console.error(`[agent-scaffold] ERROR: ${msg}`);
-  process.exit(1);
-}
-
-function createIfMissing(filepath, content) {
-  if (existsSync(filepath)) {
-    log(`Exists, skipped: ${basename(filepath)}`);
-    return false;
-  }
-  mkdirSync(dirname(filepath), { recursive: true });
-  writeFileSync(filepath, content + "\n", "utf8");
-  log(`Created: ${basename(filepath)}`);
-  return true;
-}
+  Observations don't need to be claimed — they are passive knowledge.`;
 
 // --------------- Project Detection ---------------
 
@@ -276,9 +310,9 @@ function detectProject(target) {
   const info = {
     name: basename(target),
     description: "",
-    languages: [],      // multi-language support
+    languages: [],
     framework: null,
-    frameworks: [],      // multiple frameworks
+    frameworks: [],
     install: null,
     build: null,
     dev: null,
@@ -289,7 +323,7 @@ function detectProject(target) {
     formatter: null,
     linter: null,
     testFramework: null,
-    testFrameworks: [],  // multiple test frameworks
+    testFrameworks: [],
     naming: null,
     srcDirs: [],
     hasDocker: false,
@@ -297,9 +331,14 @@ function detectProject(target) {
     hasReadme: false,
     entryPoints: [],
     configFiles: [],
+    // Monorepo fields
+    isMonorepo: false,
+    monorepoType: null,
+    workspaceNames: [],
+    workspacePackages: [],
   };
 
-  // --- Read project description from multiple sources ---
+  // --- Read root package.json ---
   const pkgPath = join(target, "package.json");
   let pkg = null;
   if (existsSync(pkgPath)) {
@@ -309,7 +348,10 @@ function detectProject(target) {
     info.description = pkg.description;
   }
 
-  // Try setup.py for description
+  // --- Detect monorepo ---
+  detectMonorepo(target, info, pkg);
+
+  // --- Read project description from other sources ---
   const setupPyPath = join(target, "setup.py");
   if (!info.description && existsSync(setupPyPath)) {
     try {
@@ -319,7 +361,6 @@ function detectProject(target) {
     } catch { /* ignore */ }
   }
 
-  // Try README first paragraph
   for (const readme of ["README.md", "README.rst", "README.txt", "README"]) {
     const readmePath = join(target, readme);
     if (existsSync(readmePath)) {
@@ -330,7 +371,6 @@ function detectProject(target) {
           const lines = content.split("\n");
           for (const line of lines) {
             const trimmed = line.trim();
-            // Skip headings, badges, empty lines, HTML tags
             if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("[!") || trimmed.startsWith("![") || trimmed.startsWith("---") || trimmed.startsWith("<")) continue;
             info.description = trimmed.slice(0, 200);
             break;
@@ -341,7 +381,7 @@ function detectProject(target) {
     }
   }
 
-  // --- Detect source directories with descriptions ---
+  // --- Detect source directories ---
   const dirMap = {
     src: "source code",
     lib: "library modules",
@@ -375,88 +415,92 @@ function detectProject(target) {
   for (const [dir, desc] of Object.entries(dirMap)) {
     if (existsSync(join(target, dir))) info.srcDirs.push({ name: dir, desc });
   }
-  // Test directories
   for (const dir of ["tests", "test", "__tests__", "cypress", "e2e"]) {
     if (existsSync(join(target, dir))) {
       info.srcDirs.push({ name: dir, desc: "tests" });
-      break; // only add one test dir label
+      break;
     }
   }
   if (existsSync(join(target, "docs"))) info.srcDirs.push({ name: "docs", desc: "documentation" });
 
-  // --- Detect Docker, CI, config files ---
-  info.hasDocker = existsSync(join(target, "Dockerfile")) || existsSync(join(target, "docker-compose.yml")) || existsSync(join(target, "docker-compose.yaml"));
-  info.hasCi = existsSync(join(target, ".github/workflows")) || existsSync(join(target, ".gitlab-ci.yml")) || existsSync(join(target, "Jenkinsfile")) || existsSync(join(target, ".circleci"));
+  // --- For monorepos, add workspace dirs with richer descriptions ---
+  if (info.isMonorepo && info.workspacePackages.length > 0) {
+    for (const wp of info.workspacePackages) {
+      const existing = info.srcDirs.find(d => d.name === wp.dir);
+      if (existing) {
+        // Enrich existing entry with framework info
+        if (wp.frameworks.length > 0) {
+          existing.desc = `${wp.frameworks.join(" + ")} ${existing.desc}`;
+        }
+      } else {
+        const desc = wp.frameworks.length > 0
+          ? `${wp.frameworks.join(" + ")} workspace`
+          : "workspace package";
+        info.srcDirs.push({ name: wp.dir, desc });
+      }
+    }
+  }
 
-  // Config files
+  // --- Detect Docker, CI, config files ---
+  info.hasDocker = ["Dockerfile", "docker-compose.yml", "docker-compose.yaml"].some(f => existsSync(join(target, f)));
+  // Also check for Dockerfile-* patterns (e.g., Dockerfile-frontend, Dockerfile-backend)
+  try {
+    const rootFiles = readdirSync(target);
+    if (rootFiles.some(f => f.startsWith("Dockerfile"))) info.hasDocker = true;
+  } catch { /* ignore */ }
+
+  info.hasCi = [".github/workflows", ".gitlab-ci.yml", "Jenkinsfile", ".circleci"].some(f => existsSync(join(target, f)));
+
   for (const f of [".env.example", ".editorconfig", "tsconfig.json", "pyproject.toml", "Cargo.toml", "go.mod", ".eslintrc.js", ".eslintrc.json", "biome.json", "ruff.toml"]) {
     if (existsSync(join(target, f))) info.configFiles.push(f);
   }
 
-  // Entry points
   for (const f of ["main.py", "app.py", "server.py", "index.ts", "index.js", "main.ts", "main.go", "main.rs", "src/main.rs", "src/lib.rs"]) {
     if (existsSync(join(target, f))) info.entryPoints.push(f);
   }
 
-  // --- Node.js / TypeScript ---
+  // --- Detect from root package.json ---
   if (pkg) {
-    const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-    const scripts = pkg.scripts || {};
+    detectNodePackage(target, info, pkg);
+  }
 
-    // Language
-    if (deps.typescript || existsSync(join(target, "tsconfig.json"))) {
-      info.languages.push("TypeScript");
-    } else {
-      info.languages.push("JavaScript");
+  // --- For monorepos without root deps, merge from workspace packages ---
+  if (info.isMonorepo && info.languages.length === 0) {
+    for (const wp of info.workspacePackages) {
+      for (const lang of wp.languages) {
+        if (!info.languages.includes(lang)) info.languages.push(lang);
+      }
+      for (const fw of wp.frameworks) {
+        if (!info.frameworks.includes(fw)) info.frameworks.push(fw);
+      }
+      for (const tf of wp.testFrameworks) {
+        if (!info.testFrameworks.includes(tf)) info.testFrameworks.push(tf);
+      }
+      if (wp.linter && !info.linter) info.linter = wp.linter;
+      if (wp.formatter && !info.formatter) info.formatter = wp.formatter;
     }
 
-    // Framework
-    if (deps.next) info.frameworks.push("Next.js");
-    if (deps.nuxt) info.frameworks.push("Nuxt");
-    if (deps.react && !deps.next) info.frameworks.push("React");
-    if (deps.vue && !deps.nuxt) info.frameworks.push("Vue");
-    if (deps.svelte || deps["@sveltejs/kit"]) info.frameworks.push("SvelteKit");
-    if (deps.express) info.frameworks.push("Express");
-    if (deps.fastify) info.frameworks.push("Fastify");
-    if (deps.nest || deps["@nestjs/core"]) info.frameworks.push("NestJS");
-    if (deps.electron) info.frameworks.push("Electron");
-    if (deps.cypress) info.testFrameworks.push("Cypress");
-    if (deps.playwright || deps["@playwright/test"]) info.testFrameworks.push("Playwright");
-
-    // Package manager
-    if (existsSync(join(target, "pnpm-lock.yaml"))) {
-      info.install = "pnpm install";
-    } else if (existsSync(join(target, "bun.lockb")) || existsSync(join(target, "bun.lock"))) {
-      info.install = "bun install";
-    } else if (existsSync(join(target, "yarn.lock"))) {
-      info.install = "yarn install";
-    } else {
-      info.install = "npm install";
+    // Detect package manager from lockfiles
+    if (!info.install) {
+      if (existsSync(join(target, "pnpm-lock.yaml"))) info.install = "pnpm install";
+      else if (existsSync(join(target, "bun.lockb")) || existsSync(join(target, "bun.lock"))) info.install = "bun install";
+      else if (existsSync(join(target, "yarn.lock"))) info.install = "yarn install";
+      else if (existsSync(join(target, "package-lock.json"))) info.install = "npm install";
     }
-    const pm = info.install.split(" ")[0];
 
-    // Scripts detection
-    if (scripts.build) info.build = `${pm} run build`;
-    if (scripts.dev) info.dev = `${pm} run dev`;
-    else if (scripts.start) info.dev = `${pm} start`;
-    if (scripts.test) info.test = `${pm} test`;
-    if (scripts.lint) info.lint = `${pm} run lint`;
-    if (scripts.format) info.format = `${pm} run format`;
-    if (scripts.typecheck || scripts["type-check"]) info.typecheck = `${pm} run typecheck`;
-
-    // Test framework
-    if (deps.vitest) info.testFrameworks.push("Vitest");
-    if (deps.jest) info.testFrameworks.push("Jest");
-    if (deps.mocha) info.testFrameworks.push("Mocha");
-
-    // Linter / Formatter
-    if (deps.oxlint) info.linter = "Oxlint";
-    else if (deps.eslint) info.linter = "ESLint";
-    else if (deps.biome || deps["@biomejs/biome"]) { info.linter = "Biome"; info.formatter = "Biome"; }
-
-    if (!info.formatter) {
-      if (deps.prettier) info.formatter = "Prettier";
-      else if (deps.oxfmt) info.formatter = "Oxfmt";
+    // For monorepos, generate per-workspace commands
+    if (!info.build && !info.dev && !info.test) {
+      const pm = info.install ? info.install.split(" ")[0] : "npm";
+      for (const wp of info.workspacePackages) {
+        if (wp.scripts.build && !info.build) info.build = `cd ${wp.dir} && ${pm} run build`;
+        if (wp.scripts.dev && !info.dev) info.dev = `cd ${wp.dir} && ${pm} run dev`;
+        if (wp.scripts.test && !info.test) info.test = `cd ${wp.dir} && ${pm} test`;
+        if (wp.scripts.lint && !info.lint) info.lint = `cd ${wp.dir} && ${pm} run lint`;
+        if (wp.scripts.format && !info.format) info.format = `cd ${wp.dir} && ${pm} run format`;
+        if ((wp.scripts.typecheck || wp.scripts["type-check"]) && !info.typecheck) {
+          info.typecheck = `cd ${wp.dir} && ${pm} run ${wp.scripts.typecheck ? "typecheck" : "type-check"}`;
+        }
+      }
     }
   }
 
@@ -467,7 +511,6 @@ function detectProject(target) {
     if (!info.languages.includes("Python")) info.languages.push("Python");
     info.naming = info.naming || "snake_case for functions/variables, PascalCase for classes";
 
-    // Read requirements.txt for framework detection
     if (existsSync(requirementsPath)) {
       try {
         const content = readFileSync(requirementsPath, "utf8").toLowerCase();
@@ -503,7 +546,6 @@ function detectProject(target) {
       } catch { /* ignore */ }
     }
 
-    // Python commands (only if not already set by JS scripts)
     if (!info.test) {
       if (info.testFrameworks.includes("pytest")) info.test = "pytest";
       else info.test = "python -m pytest";
@@ -561,7 +603,7 @@ function detectProject(target) {
     info.naming = info.naming || "camelCase for methods, PascalCase for classes";
   }
 
-  // Deduplicate frameworks
+  // Deduplicate
   info.frameworks = [...new Set(info.frameworks)];
   info.testFrameworks = [...new Set(info.testFrameworks)];
 
@@ -574,11 +616,175 @@ function detectProject(target) {
   return info;
 }
 
+// --------------- Monorepo Detection ---------------
+
+function detectMonorepo(target, info, rootPkg) {
+  // Check pnpm-workspace.yaml
+  const pnpmWsPath = join(target, "pnpm-workspace.yaml");
+  if (existsSync(pnpmWsPath)) {
+    info.isMonorepo = true;
+    info.monorepoType = "pnpm workspaces";
+  }
+
+  // Check lerna.json
+  if (existsSync(join(target, "lerna.json"))) {
+    info.isMonorepo = true;
+    info.monorepoType = info.monorepoType || "Lerna";
+  }
+
+  // Check package.json workspaces
+  if (rootPkg?.workspaces) {
+    info.isMonorepo = true;
+    info.monorepoType = info.monorepoType || "npm workspaces";
+  }
+
+  // If no explicit monorepo config, check if subdirs have package.json (heuristic)
+  if (!info.isMonorepo && !rootPkg) {
+    try {
+      const entries = readdirSync(target, { withFileTypes: true });
+      const subPkgs = entries
+        .filter(e => e.isDirectory() && !e.name.startsWith(".") && !e.name.startsWith("node_modules"))
+        .filter(e => existsSync(join(target, e.name, "package.json")));
+      if (subPkgs.length >= 2) {
+        info.isMonorepo = true;
+        info.monorepoType = "multi-package";
+      }
+    } catch { /* ignore */ }
+  }
+
+  // If monorepo detected, scan workspace packages
+  if (info.isMonorepo) {
+    scanWorkspacePackages(target, info);
+  }
+}
+
+function scanWorkspacePackages(target, info) {
+  try {
+    const entries = readdirSync(target, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".") || entry.name === "node_modules") continue;
+
+      const subPkgPath = join(target, entry.name, "package.json");
+      if (!existsSync(subPkgPath)) continue;
+
+      let subPkg;
+      try { subPkg = JSON.parse(readFileSync(subPkgPath, "utf8")); } catch { continue; }
+
+      const wp = {
+        dir: entry.name,
+        name: subPkg.name || entry.name,
+        languages: [],
+        frameworks: [],
+        testFrameworks: [],
+        linter: null,
+        formatter: null,
+        scripts: subPkg.scripts || {},
+      };
+
+      const deps = { ...subPkg.dependencies, ...subPkg.devDependencies };
+
+      // Language
+      if (deps.typescript || existsSync(join(target, entry.name, "tsconfig.json"))) {
+        wp.languages.push("TypeScript");
+      } else {
+        wp.languages.push("JavaScript");
+      }
+
+      // Frameworks
+      if (deps.next) wp.frameworks.push("Next.js");
+      if (deps.nuxt) wp.frameworks.push("Nuxt");
+      if (deps.react && !deps.next) wp.frameworks.push("React");
+      if (deps.vue && !deps.nuxt) wp.frameworks.push("Vue");
+      if (deps.svelte || deps["@sveltejs/kit"]) wp.frameworks.push("SvelteKit");
+      if (deps.express) wp.frameworks.push("Express");
+      if (deps.fastify) wp.frameworks.push("Fastify");
+      if (deps.nest || deps["@nestjs/core"]) wp.frameworks.push("NestJS");
+      if (deps.electron) wp.frameworks.push("Electron");
+
+      // Test frameworks
+      if (deps.vitest) wp.testFrameworks.push("Vitest");
+      if (deps.jest) wp.testFrameworks.push("Jest");
+      if (deps.mocha) wp.testFrameworks.push("Mocha");
+      if (deps.cypress) wp.testFrameworks.push("Cypress");
+      if (deps.playwright || deps["@playwright/test"]) wp.testFrameworks.push("Playwright");
+
+      // Linter/Formatter
+      if (deps.oxlint) wp.linter = "Oxlint";
+      else if (deps.eslint) wp.linter = "ESLint";
+      else if (deps.biome || deps["@biomejs/biome"]) { wp.linter = "Biome"; wp.formatter = "Biome"; }
+      if (!wp.formatter) {
+        if (deps.prettier) wp.formatter = "Prettier";
+      }
+
+      info.workspaceNames.push(entry.name);
+      info.workspacePackages.push(wp);
+    }
+  } catch { /* ignore */ }
+}
+
+function detectNodePackage(target, info, pkg) {
+  const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+  const scripts = pkg.scripts || {};
+
+  // Language
+  if (deps.typescript || existsSync(join(target, "tsconfig.json"))) {
+    if (!info.languages.includes("TypeScript")) info.languages.push("TypeScript");
+  } else {
+    if (!info.languages.includes("JavaScript") && !info.languages.includes("TypeScript")) info.languages.push("JavaScript");
+  }
+
+  // Framework
+  if (deps.next) info.frameworks.push("Next.js");
+  if (deps.nuxt) info.frameworks.push("Nuxt");
+  if (deps.react && !deps.next) info.frameworks.push("React");
+  if (deps.vue && !deps.nuxt) info.frameworks.push("Vue");
+  if (deps.svelte || deps["@sveltejs/kit"]) info.frameworks.push("SvelteKit");
+  if (deps.express) info.frameworks.push("Express");
+  if (deps.fastify) info.frameworks.push("Fastify");
+  if (deps.nest || deps["@nestjs/core"]) info.frameworks.push("NestJS");
+  if (deps.electron) info.frameworks.push("Electron");
+  if (deps.cypress) info.testFrameworks.push("Cypress");
+  if (deps.playwright || deps["@playwright/test"]) info.testFrameworks.push("Playwright");
+
+  // Package manager
+  if (!info.install) {
+    if (existsSync(join(target, "pnpm-lock.yaml"))) info.install = "pnpm install";
+    else if (existsSync(join(target, "bun.lockb")) || existsSync(join(target, "bun.lock"))) info.install = "bun install";
+    else if (existsSync(join(target, "yarn.lock"))) info.install = "yarn install";
+    else info.install = "npm install";
+  }
+  const pm = info.install.split(" ")[0];
+
+  // Scripts detection
+  if (scripts.build && !info.build) info.build = `${pm} run build`;
+  if (scripts.dev && !info.dev) info.dev = `${pm} run dev`;
+  else if (scripts.start && !info.dev) info.dev = `${pm} start`;
+  if (scripts.test && !info.test) info.test = `${pm} test`;
+  if (scripts.lint && !info.lint) info.lint = `${pm} run lint`;
+  if (scripts.format && !info.format) info.format = `${pm} run format`;
+  if ((scripts.typecheck || scripts["type-check"]) && !info.typecheck) info.typecheck = `${pm} run typecheck`;
+
+  // Test framework
+  if (deps.vitest) info.testFrameworks.push("Vitest");
+  if (deps.jest) info.testFrameworks.push("Jest");
+  if (deps.mocha) info.testFrameworks.push("Mocha");
+
+  // Linter / Formatter
+  if (!info.linter) {
+    if (deps.oxlint) info.linter = "Oxlint";
+    else if (deps.eslint) info.linter = "ESLint";
+    else if (deps.biome || deps["@biomejs/biome"]) { info.linter = "Biome"; info.formatter = "Biome"; }
+  }
+  if (!info.formatter) {
+    if (deps.prettier) info.formatter = "Prettier";
+    else if (deps.oxfmt) info.formatter = "Oxfmt";
+  }
+}
+
 // --------------- Framework-Specific Conventions ---------------
 
 function getFrameworkConventions(frameworks) {
   const conventions = [];
-
   for (const fw of frameworks) {
     switch (fw) {
       case "Next.js":
@@ -614,13 +820,132 @@ function getFrameworkConventions(frameworks) {
         break;
     }
   }
-
   return conventions;
+}
+
+// --------------- Framework-Specific Footgun Rules ---------------
+
+function getFrameworkFootguns(frameworks, info) {
+  const rules = [];
+  for (const fw of frameworks) {
+    switch (fw) {
+      case "Vue":
+      case "Nuxt":
+        rules.push("- **Vue reactivity**: never destructure `reactive()` return values — loses reactivity. Use `toRefs()` or access properties directly");
+        rules.push("- **Vue props**: use `defineProps<T>()` with TypeScript generics, not runtime `props: {}` declaration");
+        rules.push("- **Vue computed**: prefer `computed()` over methods for derived state — caches automatically");
+        rules.push("- **Vue watchers**: avoid `watch()` on entire reactive objects without `{ deep: true }`; prefer watching specific refs");
+        rules.push("- **Vue async setup**: if using `<script setup>` with top-level `await`, the component becomes async — must wrap in `<Suspense>`");
+        break;
+      case "React":
+        rules.push("- **React hooks**: never call hooks conditionally or inside loops — violates Rules of Hooks");
+        rules.push("- **React state**: `setState` is asynchronous; don't read state right after setting it");
+        rules.push("- **React effects**: always include dependencies in `useEffect` dependency array; missing deps cause stale closures");
+        rules.push("- **React keys**: never use array index as `key` for lists that reorder — causes state bugs");
+        break;
+      case "Next.js":
+        rules.push("- **Next.js**: `'use client'` directive must be at the top of the file, before any imports");
+        rules.push("- **Next.js**: Server Components cannot use hooks, browser APIs, or event handlers");
+        rules.push("- **Next.js**: `fetch()` in Server Components is cached by default — use `{ cache: 'no-store' }` for dynamic data");
+        rules.push("- **Next.js**: `redirect()` throws internally — don't wrap in try/catch");
+        break;
+      case "Express":
+        rules.push("- **Express 5**: async route handlers propagate errors automatically — no need for try/catch wrapper unless custom error response needed");
+        rules.push("- **Express middleware**: `next()` does not stop execution — always `return next()` or use `return res.json()`");
+        rules.push("- **Express ordering**: middleware order matters: body parser → auth → validation → route handler → error handler (4-arg function)");
+        rules.push("- **Express error handler**: error middleware MUST have 4 parameters `(err, req, res, next)` or Express won't recognize it");
+        break;
+      case "Fastify":
+        rules.push("- **Fastify**: use JSON Schema for request/response validation; Fastify serializes responses — don't call `JSON.stringify()` manually");
+        rules.push("- **Fastify decorators**: add decorators in plugin registration, not at runtime — they are frozen after `ready`");
+        break;
+      case "NestJS":
+        rules.push("- **NestJS DI**: decorators like `@Injectable()` are required — missing them causes DI resolution failures");
+        rules.push("- **NestJS guards**: guards run before interceptors and pipes — order matters for auth + validation");
+        break;
+      case "Django":
+        rules.push("- **Django ORM**: `filter()` returns a lazy QuerySet — chain `.all()` or iterate to execute. Avoid `.get()` without try/except");
+        rules.push("- **Django migrations**: never manually edit migration files — use `makemigrations` to regenerate");
+        rules.push("- **Django settings**: `DEBUG=True` in production leaks source code in error pages");
+        break;
+      case "FastAPI":
+        rules.push("- **FastAPI**: `Depends()` runs per-request — don't use it for expensive one-time initialization");
+        rules.push("- **FastAPI Pydantic**: `Optional[str]` is not the same as `str = None` in Pydantic v2 — use `str | None = None`");
+        rules.push("- **FastAPI async**: mixing sync/async incorrectly blocks the event loop — use `async def` for I/O, plain `def` for CPU");
+        break;
+      case "Flask":
+        rules.push("- **Flask**: `g` and `request` are thread-local proxies — don't pass them to background threads");
+        rules.push("- **Flask**: `app.run(debug=True)` uses the reloader — spawns two processes which confuses debuggers");
+        break;
+      case "SvelteKit":
+        rules.push("- **SvelteKit**: `$state` rune creates reactive state — don't use `let` for reactive variables in Svelte 5");
+        rules.push("- **SvelteKit**: server-only code in `+page.server.ts` — importing server modules in `+page.svelte` leaks to client");
+        break;
+    }
+  }
+
+  // Package manager specific
+  if (info.isMonorepo && info.monorepoType) {
+    if (info.monorepoType.includes("pnpm")) {
+      rules.push("- **pnpm workspace**: use `pnpm -F <package> add <dep>` to add deps to a specific workspace");
+      rules.push("- **pnpm workspace**: never use `workspace:*` in `dependencies` — breaks `npm install` for consumers. Use in `devDependencies` only");
+      rules.push("- **pnpm workspace**: run scripts in workspace: `pnpm -F <package> run <script>`");
+    } else if (info.monorepoType.includes("npm")) {
+      rules.push("- **npm workspace**: use `npm -w <package> run <script>` to run scripts in a specific workspace");
+    }
+  }
+
+  return rules;
+}
+
+// --------------- Multi-Agent Safety Rules ---------------
+
+const MULTI_AGENT_SAFETY = `## Multi-Agent Safety
+
+When multiple agents (or agent sessions) work on the same codebase:
+
+- Do not create, apply, or drop \`git stash\` entries unless explicitly requested
+- When committing, scope to your own changes only — do not stage unrecognized files
+- Do not switch branches or check out a different branch unless explicitly requested
+- Do not create, remove, or modify \`git worktree\` checkouts unless explicitly requested
+- When pushing, \`git pull --rebase\` first to integrate others' work — never discard
+- When you see unrecognized files in the working tree, leave them alone and keep going
+- Focus reports on your own edits; avoid disclaimers about other agents' work`;
+
+// --------------- Generate .claude/settings.json ---------------
+
+function generateClaudeSettings(info) {
+  const allow = [];
+
+  // Add detected tool commands
+  if (info.test) allow.push(`Bash(${info.test})`);
+  if (info.lint) allow.push(`Bash(${info.lint})`);
+  if (info.build) allow.push(`Bash(${info.build})`);
+  if (info.typecheck) allow.push(`Bash(${info.typecheck})`);
+  if (info.format) allow.push(`Bash(${info.format})`);
+
+  // Add workspace commands for monorepos
+  if (info.isMonorepo && info.workspacePackages.length > 0) {
+    const pm = info.install ? info.install.split(" ")[0] : "npm";
+    for (const wp of info.workspacePackages) {
+      if (wp.scripts.test) allow.push(`Bash(cd ${wp.dir} && ${pm} test)`);
+      if (wp.scripts.lint) allow.push(`Bash(cd ${wp.dir} && ${pm} run lint)`);
+      if (wp.scripts.build) allow.push(`Bash(cd ${wp.dir} && ${pm} run build)`);
+    }
+  }
+
+  // Common read-only tools
+  allow.push("Read", "Glob", "Grep");
+
+  // Deduplicate
+  const uniqueAllow = [...new Set(allow)];
+
+  return JSON.stringify({ permissions: { allow: uniqueAllow } }, null, 2);
 }
 
 // --------------- Generate CLAUDE.md ---------------
 
-function generateClaudeMd(info) {
+function generateClaudeMd(info, hasSignals) {
   const lines = ["# Project Instructions", ""];
 
   // Overview
@@ -635,6 +960,7 @@ function generateClaudeMd(info) {
     parts.push(`**Tech Stack**: ${info.language}`);
     if (info.framework) parts[0] += ` / ${info.framework}`;
     if (info.hasDocker) parts.push("Docker");
+    if (info.isMonorepo) parts.push(`Monorepo (${info.monorepoType})`);
     lines.push(parts.join(" | "), "");
   }
 
@@ -655,13 +981,38 @@ function generateClaudeMd(info) {
   }
   lines.push("```", "");
 
+  // Monorepo workspace commands
+  if (info.isMonorepo && info.workspacePackages.length > 0) {
+    const pm = info.install ? info.install.split(" ")[0] : "npm";
+    lines.push("### Workspace Commands", "");
+    lines.push("```bash");
+    for (const wp of info.workspacePackages) {
+      const scripts = wp.scripts;
+      const wpCmds = [];
+      if (scripts.dev) wpCmds.push(`cd ${wp.dir} && ${pm} run dev`);
+      if (scripts.build) wpCmds.push(`cd ${wp.dir} && ${pm} run build`);
+      if (scripts.test) wpCmds.push(`cd ${wp.dir} && ${pm} test`);
+      if (scripts.lint) wpCmds.push(`cd ${wp.dir} && ${pm} run lint`);
+      if (wpCmds.length > 0) {
+        lines.push(`# ${wp.dir} (${wp.frameworks.join(" + ") || wp.languages.join(" + ")})`);
+        for (const c of wpCmds) lines.push(c);
+        lines.push("");
+      }
+    }
+    lines.push("```", "");
+  }
+
   // Code Style
   lines.push("## Code Style & Conventions", "");
   if (info.language) lines.push(`- **Language**: ${info.language}`);
   if (info.formatter) lines.push(`- **Formatter**: ${info.formatter}${info.format ? ` — run \`${info.format}\` before committing` : ""}`);
   if (info.linter) lines.push(`- **Linter**: ${info.linter}${info.lint ? ` — run \`${info.lint}\`` : ""}`);
   if (info.naming) lines.push(`- **Naming**: ${info.naming}`);
-  lines.push("- Prefer strict typing; avoid `any` in TypeScript");
+  if (info.languages.includes("TypeScript")) {
+    lines.push("- Prefer strict typing; avoid `any`");
+  } else if (info.languages.includes("Python")) {
+    lines.push("- Use type hints; avoid `Any` — prefer explicit types");
+  }
   lines.push("- Add brief comments for non-obvious logic");
   lines.push("- Keep files focused; extract helpers when a file grows too large");
   lines.push("");
@@ -676,12 +1027,35 @@ function generateClaudeMd(info) {
     }
   }
 
+  // Framework-specific footguns
+  if (info.frameworks.length > 0) {
+    const footguns = getFrameworkFootguns(info.frameworks, info);
+    if (footguns.length > 0) {
+      lines.push("## Known Pitfalls", "");
+      lines.push("Framework-specific gotchas — violating these causes subtle bugs:", "");
+      lines.push(...footguns);
+      lines.push("");
+    }
+  }
+
+  // Known Footguns placeholder (for project-specific issues to accumulate)
+  lines.push("## Known Footguns", "");
+  lines.push("<!-- Record project-specific pitfalls discovered during development.");
+  lines.push("   Each entry: what went wrong, why, and how to avoid it. Example:");
+  lines.push("   - GitHub comment escaping: use heredoc for bodies with backticks");
+  lines.push("   - API rate limit: batch requests to /api/search, max 10/min -->");
+  lines.push("");
+
   // Testing
   lines.push("## Testing", "");
   if (info.testFramework) lines.push(`- **Framework**: ${info.testFramework}`);
   if (info.test) lines.push(`- **Run**: \`${info.test}\``);
   lines.push("- Run tests before pushing when you touch logic");
-  lines.push("- Test files colocated with source (e.g. `foo.test.ts` next to `foo.ts`) or in `tests/` directory");
+  if (info.languages.includes("Python")) {
+    lines.push("- Test files in `tests/` directory (e.g. `test_foo.py` for `foo.py`)");
+  } else {
+    lines.push("- Test files colocated with source (e.g. `foo.test.ts` next to `foo.ts`) or in `tests/` directory");
+  }
   if (info.testFrameworks.includes("Cypress") || info.testFrameworks.includes("Playwright")) {
     lines.push(`- E2E tests: ${info.testFrameworks.filter(t => t === "Cypress" || t === "Playwright").join(" + ")}`);
   }
@@ -716,24 +1090,34 @@ function generateClaudeMd(info) {
   lines.push("- Validate all external input; avoid SQL injection, XSS, and command injection");
   lines.push("");
 
-  // Memory & Signal System
-  lines.push("## Memory & Signal System", "");
+  // Memory system
+  lines.push("## Memory System", "");
   lines.push("This project uses file-system based memory for cross-session AI agent collaboration:", "");
   lines.push("- `MEMORY.md` — Long-term project facts, patterns, and preferences");
   lines.push("- `WIP.md` — Current task handoff (read at session start, update at session end)");
   lines.push("- `DECISIONS.md` — Architecture Decision Records");
-  lines.push("- `signals/active/` — Active task signals (YAML); pick up open tasks here");
-  lines.push("- `signals/observations/` — Environment observations and tech debt notes");
   lines.push("- `memory/` — Daily session logs (`YYYY-MM-DD.md`)");
+  if (hasSignals) {
+    lines.push("- `signals/active/` — Active task signals (YAML); pick up open tasks here");
+    lines.push("- `signals/observations/` — Environment observations and tech debt notes");
+  }
   lines.push("");
 
   // Agent Work Protocol
   lines.push("## Agent Work Protocol", "");
-  lines.push("1. **Session start**: Read `WIP.md` and scan `signals/active/` for open tasks");
-  lines.push("2. **During work**: Record decisions in `DECISIONS.md`; create observation signals for discovered issues");
-  lines.push("3. **Session end**: Update `WIP.md` with progress, next steps, and blockers; archive completed signals");
-  lines.push("4. **Continuous iteration**: After completing a signal, check `signals/active/` for the next open task");
+  lines.push("1. **Session start**: Read `WIP.md` to understand current progress");
+  if (hasSignals) {
+    lines.push("2. **Pick up work**: Scan `signals/active/` for open tasks; claim one by updating its YAML");
+  }
+  lines.push(`${hasSignals ? "3" : "2"}. **During work**: Record decisions in \`DECISIONS.md\`; update \`WIP.md\` at milestones`);
+  lines.push(`${hasSignals ? "4" : "3"}. **Session end**: Update \`WIP.md\` with progress, next steps, and blockers`);
+  if (hasSignals) {
+    lines.push("5. **Continuous iteration**: Archive completed signals; check `signals/active/` for the next task");
+  }
   lines.push("");
+
+  // Multi-Agent Safety
+  lines.push(MULTI_AGENT_SAFETY, "");
 
   // Commit
   lines.push("## Commit Guidelines", "");
@@ -747,7 +1131,7 @@ function generateClaudeMd(info) {
 
 // --------------- Generate AGENTS.md ---------------
 
-function generateAgentsMd(info) {
+function generateAgentsMd(info, hasSignals) {
   const lines = ["# AGENTS.md", ""];
 
   // Project overview
@@ -758,7 +1142,10 @@ function generateAgentsMd(info) {
     lines.push(`<!-- TODO: Add a one-line description of ${info.name} -->`, "");
   }
   if (info.language) {
-    lines.push(`**Tech Stack**: ${info.language}${info.framework ? ` / ${info.framework}` : ""}`, "");
+    const stackParts = [info.language];
+    if (info.framework) stackParts.push(info.framework);
+    if (info.isMonorepo) stackParts.push(`Monorepo (${info.monorepoType})`);
+    lines.push(`**Tech Stack**: ${stackParts.join(" / ")}`, "");
   }
 
   // Commands
@@ -777,6 +1164,23 @@ function generateAgentsMd(info) {
     if (cmd) lines.push(`${cmd.padEnd(35)} # ${label}`);
   }
   lines.push("```", "");
+
+  // Monorepo workspace commands
+  if (info.isMonorepo && info.workspacePackages.length > 0) {
+    const pm = info.install ? info.install.split(" ")[0] : "npm";
+    lines.push("### Workspace Commands", "");
+    for (const wp of info.workspacePackages) {
+      const scripts = wp.scripts;
+      const wpCmds = [];
+      if (scripts.dev) wpCmds.push(`cd ${wp.dir} && ${pm} run dev`);
+      if (scripts.build) wpCmds.push(`cd ${wp.dir} && ${pm} run build`);
+      if (scripts.test) wpCmds.push(`cd ${wp.dir} && ${pm} test`);
+      if (wpCmds.length > 0) {
+        lines.push(`**${wp.dir}** (${wp.frameworks.join(", ") || wp.languages.join(", ")}): \`${wpCmds[0]}\``);
+      }
+    }
+    lines.push("");
+  }
 
   // Architecture
   lines.push("## Architecture", "");
@@ -828,6 +1232,16 @@ function generateAgentsMd(info) {
   lines.push("- Run lint + tests before every commit");
   lines.push("");
 
+  // Known Pitfalls (framework-specific)
+  if (info.frameworks.length > 0) {
+    const footguns = getFrameworkFootguns(info.frameworks, info);
+    if (footguns.length > 0) {
+      lines.push("## Known Pitfalls", "");
+      lines.push(...footguns);
+      lines.push("");
+    }
+  }
+
   // Infrastructure
   if (info.hasDocker || info.hasCi) {
     lines.push("## Infrastructure", "");
@@ -836,26 +1250,36 @@ function generateAgentsMd(info) {
     lines.push("");
   }
 
-  // Memory & Signal System
-  lines.push("## Memory & Signal System", "");
+  // Multi-Agent Safety
+  lines.push(MULTI_AGENT_SAFETY, "");
+
+  // Memory system
+  lines.push("## Memory System", "");
   lines.push("File-system based memory for cross-session agent collaboration:", "");
   lines.push("| File/Directory | Purpose |");
   lines.push("|----------------|---------|");
   lines.push("| `MEMORY.md` | Long-term project facts, patterns, preferences |");
   lines.push("| `WIP.md` | Current task handoff between sessions |");
   lines.push("| `DECISIONS.md` | Architecture Decision Records |");
-  lines.push("| `signals/active/` | Active task signals (YAML) — pick up open tasks |");
-  lines.push("| `signals/observations/` | Environment observations, tech debt notes |");
-  lines.push("| `signals/archive/` | Completed signals |");
   lines.push("| `memory/` | Daily session logs (`YYYY-MM-DD.md`) |");
+  if (hasSignals) {
+    lines.push("| `signals/active/` | Active task signals (YAML) — pick up open tasks |");
+    lines.push("| `signals/observations/` | Environment observations, tech debt notes |");
+    lines.push("| `signals/archive/` | Completed signals |");
+  }
   lines.push("");
 
   // Agent Work Protocol
   lines.push("## Agent Work Protocol", "");
-  lines.push("1. **Session start**: Read `WIP.md` + scan `signals/active/` for open tasks");
-  lines.push("2. **During work**: Record decisions in `DECISIONS.md`; create observation signals for new issues");
-  lines.push("3. **Session end**: Update `WIP.md` with progress, next steps, blockers; archive completed signals");
-  lines.push("4. **Continuous iteration**: After completing a signal, return to `signals/active/` for the next task");
+  lines.push("1. **Session start**: Read `WIP.md` to understand current progress");
+  if (hasSignals) {
+    lines.push("2. **Pick up work**: Scan `signals/active/` for open tasks");
+  }
+  lines.push(`${hasSignals ? "3" : "2"}. **During work**: Record decisions in \`DECISIONS.md\`; update \`WIP.md\` at milestones`);
+  lines.push(`${hasSignals ? "4" : "3"}. **Session end**: Update \`WIP.md\` with progress, next steps, blockers`);
+  if (hasSignals) {
+    lines.push("5. **Continuous iteration**: Archive completed signals; return to `signals/active/` for the next task");
+  }
   lines.push("");
 
   return lines.join("\n");
@@ -863,14 +1287,18 @@ function generateAgentsMd(info) {
 
 // --------------- Commands ---------------
 
-function cmdInit(targetDir) {
+function cmdInit(targetDir, flags) {
   const target = resolve(targetDir || process.cwd());
+  const hasSignals = flags.signals;
+  const isSlim = flags.slim;
 
   if (!existsSync(target)) {
     err(`Directory not found: ${target}`);
   }
 
   log(`Initializing scaffold in: ${target}`);
+  if (hasSignals) log("  Signal system: enabled (--signals)");
+  if (isSlim) log("  Slim mode: enabled (--slim)");
   console.log();
 
   let created = 0;
@@ -880,8 +1308,9 @@ function cmdInit(targetDir) {
   const info = detectProject(target);
   if (info.language) {
     log(`Detected: ${info.language}${info.framework ? ` + ${info.framework}` : ""}`);
+    if (info.isMonorepo) log(`  Monorepo: ${info.monorepoType} (${info.workspaceNames.join(", ")})`);
     if (info.testFramework) log(`  Tests: ${info.testFramework}`);
-    if (info.linter || info.formatter) log(`  Tools: ${[info.linter, info.formatter].filter(Boolean).join(", ")}`);
+    if (info.linter || info.formatter) log(`  Tools: ${[...new Set([info.linter, info.formatter].filter(Boolean))].join(", ")}`);
     if (info.hasDocker) log("  Docker: yes");
     if (info.entryPoints.length > 0) log(`  Entry: ${info.entryPoints.join(", ")}`);
     if (info.description) log(`  Desc: ${info.description.slice(0, 80)}`);
@@ -891,7 +1320,7 @@ function cmdInit(targetDir) {
   console.log();
 
   // Step 2: Generate CLAUDE.md
-  const claudeMdContent = generateClaudeMd(info);
+  const claudeMdContent = generateClaudeMd(info, hasSignals);
   if (createIfMissing(join(target, "CLAUDE.md"), claudeMdContent)) {
     created++;
   } else {
@@ -899,33 +1328,79 @@ function cmdInit(targetDir) {
   }
 
   // Step 3: Generate AGENTS.md
-  const agentsMdContent = generateAgentsMd(info);
+  const agentsMdContent = generateAgentsMd(info, hasSignals);
   if (createIfMissing(join(target, "AGENTS.md"), agentsMdContent)) {
     created++;
   } else {
     skipped++;
   }
 
-  // Step 4: Create directories
-  for (const dir of DIRS) {
-    const full = join(target, dir);
-    if (!existsSync(full)) {
-      mkdirSync(full, { recursive: true });
-      log(`Created dir: ${dir}/`);
-    }
-    const gitkeep = join(full, ".gitkeep");
-    if (!existsSync(gitkeep)) {
-      writeFileSync(gitkeep, "", "utf8");
-    }
-  }
-
-  // Step 5: Create template files
-  for (const [relPath, content] of Object.entries(TEMPLATES)) {
-    const full = join(target, relPath);
-    if (createIfMissing(full, content)) {
+  // Step 3b: Generate .claude/settings.json (project-level permissions)
+  if (info.test || info.lint || info.build) {
+    const claudeSettingsPath = join(target, ".claude", "settings.json");
+    if (createIfMissing(claudeSettingsPath, generateClaudeSettings(info))) {
       created++;
     } else {
       skipped++;
+    }
+  }
+
+  if (!isSlim) {
+    // Step 4: Create core directories
+    for (const dir of CORE_DIRS) {
+      const full = join(target, dir);
+      if (!existsSync(full)) {
+        mkdirSync(full, { recursive: true });
+        log(`Created dir: ${dir}/`);
+      }
+      const gitkeep = join(full, ".gitkeep");
+      if (!existsSync(gitkeep)) {
+        writeFileSync(gitkeep, "", "utf8");
+      }
+    }
+
+    // Step 4b: Create signal directories (only with --signals)
+    if (hasSignals) {
+      for (const dir of SIGNAL_DIRS) {
+        const full = join(target, dir);
+        if (!existsSync(full)) {
+          mkdirSync(full, { recursive: true });
+          log(`Created dir: ${dir}/`);
+        }
+        const gitkeep = join(full, ".gitkeep");
+        if (!existsSync(gitkeep)) {
+          writeFileSync(gitkeep, "", "utf8");
+        }
+      }
+    }
+
+    // Step 5: Create template files
+    // MEMORY.md (dynamic, based on detected info)
+    if (createIfMissing(join(target, "MEMORY.md"), getMemoryMdTemplate(info))) {
+      created++;
+    } else {
+      skipped++;
+    }
+
+    // DECISIONS.md
+    if (createIfMissing(join(target, "DECISIONS.md"), DECISIONS_MD)) {
+      created++;
+    } else {
+      skipped++;
+    }
+
+    // WIP.md
+    if (createIfMissing(join(target, "WIP.md"), getWipMdTemplate(hasSignals))) {
+      created++;
+    } else {
+      skipped++;
+    }
+
+    // Signal templates (only with --signals)
+    if (hasSignals) {
+      if (createIfMissing(join(target, "signals/README.md"), SIGNALS_README)) created++; else skipped++;
+      if (createIfMissing(join(target, "signals/active/_example-task.yaml"), EXAMPLE_TASK_YAML)) created++; else skipped++;
+      if (createIfMissing(join(target, "signals/observations/_example-observation.yaml"), EXAMPLE_OBS_YAML)) created++; else skipped++;
     }
   }
 
@@ -952,7 +1427,108 @@ function cmdInit(targetDir) {
   log("  1. Review CLAUDE.md and AGENTS.md — fill in the overview and any TODOs");
   log("  2. Customize as needed for your project");
   log("  3. Start working with your AI agent!");
+  if (!hasSignals) {
+    log("");
+    log("Tip: Run with --signals to enable the signal-driven task coordination system");
+  }
 }
+
+// --------------- Doctor Command ---------------
+
+function cmdDoctor(targetDir) {
+  const target = resolve(targetDir || process.cwd());
+  log(`Checking scaffold health in: ${target}`);
+  console.log();
+
+  let ok = 0;
+  let warn = 0;
+  let fail = 0;
+
+  function check(label, condition, warnOnly = false) {
+    if (condition) {
+      console.log(`  ✅ ${label}`);
+      ok++;
+    } else if (warnOnly) {
+      console.log(`  ⚠️  ${label}`);
+      warn++;
+    } else {
+      console.log(`  ❌ ${label}`);
+      fail++;
+    }
+  }
+
+  // Core files
+  console.log("Core files:");
+  check("CLAUDE.md exists", existsSync(join(target, "CLAUDE.md")));
+  check("AGENTS.md exists", existsSync(join(target, "AGENTS.md")));
+
+  // Check CLAUDE.md is not empty / has real content
+  if (existsSync(join(target, "CLAUDE.md"))) {
+    const content = readFileSync(join(target, "CLAUDE.md"), "utf8");
+    check("CLAUDE.md has content (> 100 chars)", content.length > 100);
+    check("CLAUDE.md has build commands", content.includes("```bash") && !content.includes("```bash\n```"), true);
+  }
+
+  console.log("\nMemory system:");
+  check("MEMORY.md exists", existsSync(join(target, "MEMORY.md")));
+  check("WIP.md exists", existsSync(join(target, "WIP.md")));
+  check("DECISIONS.md exists", existsSync(join(target, "DECISIONS.md")));
+  check("memory/ directory exists", existsSync(join(target, "memory")), true);
+
+  // Signal system (optional)
+  const hasSignals = existsSync(join(target, "signals"));
+  if (hasSignals) {
+    console.log("\nSignal system:");
+    check("signals/active/ exists", existsSync(join(target, "signals/active")));
+    check("signals/observations/ exists", existsSync(join(target, "signals/observations")));
+    check("signals/archive/ exists", existsSync(join(target, "signals/archive")));
+    check("signals/README.md exists", existsSync(join(target, "signals/README.md")), true);
+  }
+
+  // Claude Code integration
+  console.log("\nClaude Code integration:");
+  check(".claude/settings.json exists", existsSync(join(target, ".claude/settings.json")), true);
+  if (existsSync(join(target, ".claude/settings.json"))) {
+    try {
+      JSON.parse(readFileSync(join(target, ".claude/settings.json"), "utf8"));
+      check(".claude/settings.json is valid JSON", true);
+    } catch {
+      check(".claude/settings.json is valid JSON", false);
+    }
+  }
+
+  // Quality checks
+  console.log("\nContent quality:");
+  if (existsSync(join(target, "CLAUDE.md"))) {
+    const content = readFileSync(join(target, "CLAUDE.md"), "utf8");
+    check("CLAUDE.md has Multi-Agent Safety section", content.includes("Multi-Agent Safety"), true);
+    check("CLAUDE.md has Known Pitfalls or Footguns section", content.includes("Known Pitfalls") || content.includes("Known Footguns"), true);
+  }
+
+  // .gitignore
+  console.log("\nGit integration:");
+  if (existsSync(join(target, ".gitignore"))) {
+    const gi = readFileSync(join(target, ".gitignore"), "utf8");
+    check(".gitignore has scaffold rules", gi.includes(MARKER));
+  } else {
+    check(".gitignore exists", false, true);
+  }
+
+  // Git repo
+  check("Inside a git repository", existsSync(join(target, ".git")), true);
+
+  console.log();
+  log(`Health check: ${ok} passed, ${warn} warnings, ${fail} failed`);
+  if (fail > 0) {
+    log("Run `npx agent-scaffold init` to fix missing files.");
+  } else if (warn > 0) {
+    log("All critical checks passed. Warnings are optional improvements.");
+  } else {
+    log("Scaffold is healthy!");
+  }
+}
+
+// --------------- Install Skill ---------------
 
 function cmdInstallSkill() {
   const skillDir = join(process.env.HOME || "~", ".claude", "skills", "agent-scaffold");
@@ -992,39 +1568,59 @@ function cmdInstallSkill() {
   log("Usage: tell your AI agent \"init agent scaffold\"");
 }
 
+// --------------- Help ---------------
+
 function showHelp() {
   console.log(`
 agent-scaffold — AI agent collaboration infrastructure initializer
 
 Usage:
-  agent-scaffold init [dir]       Initialize scaffold (default: current directory)
-  agent-scaffold install-skill    Install as Claude Code global skill
-  agent-scaffold --help           Show this help
+  agent-scaffold init [dir] [options]    Initialize scaffold (default: current directory)
+  agent-scaffold doctor [dir]            Check scaffold health
+  agent-scaffold install-skill           Install as Claude Code global skill
+  agent-scaffold --help                  Show this help
+
+Options:
+  --signals    Enable signal-driven task coordination system (signals/ directory)
+  --slim       Minimal output: only CLAUDE.md + AGENTS.md + .gitignore
 
 Examples:
-  npx agent-scaffold init                  # Scaffold current directory
-  npx agent-scaffold init ./my-project     # Scaffold a specific directory
-  npx agent-scaffold install-skill         # Install as Claude Code skill
+  npx agent-scaffold init                      # Scaffold current directory
+  npx agent-scaffold init ./my-project         # Scaffold a specific directory
+  npx agent-scaffold init --signals            # Include signal system
+  npx agent-scaffold init --slim               # Minimal: just CLAUDE.md + AGENTS.md
+  npx agent-scaffold doctor                    # Check scaffold health
+  npx agent-scaffold install-skill             # Install as Claude Code skill
 
-What it creates:
+What it creates (default):
   CLAUDE.md, AGENTS.md, MEMORY.md, DECISIONS.md, WIP.md,
-  memory/, signals/, .gitignore updates
+  memory/, .gitignore updates
+
+With --signals:
+  + signals/active/, signals/observations/, signals/archive/,
+    signals/README.md, example YAML files
 
 Features:
   - Auto-detects language, framework, build/test/lint commands
+  - Monorepo support (pnpm workspaces, Lerna, npm workspaces)
   - Generates CLAUDE.md and AGENTS.md with real project values
   - Supports: Node.js/TS, Python, Rust, Go, Java
   - Idempotent: never overwrites existing files
 `);
 }
 
-// Parse args
-const args = process.argv.slice(2);
-const cmd = args[0];
+// --------------- Parse args & dispatch ---------------
+
+const rawArgs = process.argv.slice(2);
+const { flags, positional } = parseFlags(rawArgs);
+const cmd = positional[0];
 
 switch (cmd) {
   case "init":
-    cmdInit(args[1]);
+    cmdInit(positional[1], flags);
+    break;
+  case "doctor":
+    cmdDoctor(positional[1]);
     break;
   case "install-skill":
     cmdInstallSkill();
@@ -1032,6 +1628,8 @@ switch (cmd) {
   case "--help":
   case "-h":
   case "help":
+    showHelp();
+    break;
   case undefined:
     showHelp();
     break;

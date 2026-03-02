@@ -1,7 +1,7 @@
 {
   "name": "agent-scaffold",
-  "version": "1.0.2",
-  "description": "AI agent collaboration infrastructure initializer. Sets up CLAUDE.md, AGENTS.md, memory, signals, and decision logs for any project.",
+  "version": "1.2.0",
+  "description": "AI agent collaboration infrastructure initializer. Sets up CLAUDE.md, AGENTS.md, memory, decision logs, and .claude/settings.json for any project. Framework-specific rules, multi-agent safety, monorepo support, auto-detection, health checks.",
   "keywords": [
     "ai-agent",
     "claude",

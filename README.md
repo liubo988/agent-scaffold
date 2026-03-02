@@ -1,8 +1,8 @@
 # Agent Scaffold
 
-AI Agent 协作基础设施一键初始化工具。为任何项目搭建跨会话记忆、信号系统和决策日志。
+AI Agent 协作基础设施一键初始化工具。为任何项目搭建跨会话记忆和决策日志。
 
-One-command AI agent collaboration infrastructure. Sets up cross-session memory, signal system, and decision logging for any project.
+One-command AI agent collaboration infrastructure. Sets up cross-session memory, decision logging, and optional signal system for any project.
 
 ## What It Creates
 
@@ -10,15 +10,17 @@ One-command AI agent collaboration infrastructure. Sets up cross-session memory,
 your-project/
 ├── CLAUDE.md              ← AI Agent instructions (Claude Code)
 ├── AGENTS.md              ← Cross-agent instructions (Codex/Gemini/Copilot)
-├── MEMORY.md              ← Long-term curated memory
+├── MEMORY.md              ← Long-term curated memory (pre-filled with detected facts)
 ├── memory/                ← Daily session logs
 ├── DECISIONS.md           ← Design decision records (ADR)
 ├── WIP.md                 ← Cross-session task handoff
+└── .gitignore             ← Updated with runtime exclusions
+
+# With --signals flag:
 ├── signals/
-│   ├── active/            ← Currently claimed tasks
+│   ├── active/            ← Currently claimed tasks (YAML)
 │   ├── observations/      ← Environment observations
 │   └── archive/           ← Completed signals
-└── .gitignore             ← Updated with runtime exclusions
 ```
 
 ## Install
@@ -57,7 +59,7 @@ bash ~/agent-scaffold/install.sh
 
 ## Usage
 
-### CLI (works with any AI agent)
+### CLI
 
 ```bash
 # Initialize current directory
@@ -66,16 +68,30 @@ npx agent-scaffold init
 # Initialize a specific directory
 npx agent-scaffold init ./my-project
 
+# Include signal-driven task coordination system
+npx agent-scaffold init --signals
+
+# Minimal output: only CLAUDE.md + AGENTS.md + .gitignore
+npx agent-scaffold init --slim
+
+# Check scaffold health
+npx agent-scaffold doctor
+
 # Install as Claude Code skill
 npx agent-scaffold install-skill
-
-# Show help
-npx agent-scaffold --help
 ```
 
-The CLI creates the directory structure and template files. Then tell your AI agent to generate `CLAUDE.md` and `AGENTS.md` with project-specific content.
+### Auto-Detection
 
-### Claude Code skill
+The CLI auto-detects your project and generates customized files:
+
+- **Languages**: Node.js/TypeScript, Python, Rust, Go, Java/Kotlin
+- **Frameworks**: Next.js, React, Vue, Express, NestJS, Django, FastAPI, Flask, etc.
+- **Monorepos**: pnpm workspaces, npm workspaces, Lerna, multi-package
+- **Tools**: ESLint, Prettier, Biome, Ruff, Clippy, etc.
+- **Infrastructure**: Docker, CI/CD pipelines
+
+### Claude Code Skill
 
 After installing as a skill, just tell Claude in any project:
 
@@ -84,14 +100,29 @@ After installing as a skill, just tell Claude in any project:
 Claude will:
 1. Analyze your project (language, framework, build commands)
 2. Generate customized `CLAUDE.md` and `AGENTS.md`
-3. Create memory directories and signal system
+3. Create memory directories and template files
 4. Update `.gitignore`
 
 ### With Codex / Gemini / Copilot
 
 Run the CLI first, then ask the AI to:
 
-> "Read the AGENTS.md template in this project, analyze the codebase, and generate a customized AGENTS.md"
+> "Read the AGENTS.md in this project, analyze the codebase, and customize it"
+
+## Options
+
+| Flag | Description |
+|------|-------------|
+| `--signals` | Enable signal-driven task coordination (`signals/` directory with YAML task files) |
+| `--slim` | Minimal output: only CLAUDE.md + AGENTS.md + .gitignore update |
+
+## Health Check
+
+```bash
+npx agent-scaffold doctor
+```
+
+Validates your scaffold setup and reports any missing or broken components.
 
 ## Team Rollout
 
@@ -120,18 +151,19 @@ npm update -g agent-scaffold
 | Agent | How to use |
 |-------|-----------|
 | **Claude Code** | Install as skill, say "init agent scaffold" |
-| **Codex** | `npx agent-scaffold init`, then ask to generate AGENTS.md |
-| **Gemini** | `npx agent-scaffold init`, then ask to generate AGENTS.md |
-| **Copilot** | `npx agent-scaffold init`, then ask to generate AGENTS.md |
-| **Cursor** | `npx agent-scaffold init`, then ask to generate AGENTS.md |
+| **Codex** | `npx agent-scaffold init`, then ask to customize AGENTS.md |
+| **Gemini** | `npx agent-scaffold init`, then ask to customize AGENTS.md |
+| **Copilot** | `npx agent-scaffold init`, then ask to customize AGENTS.md |
+| **Cursor** | `npx agent-scaffold init`, then ask to customize AGENTS.md |
 
 ## Design Principles
 
-- **Memory as infrastructure**: File system is the persistence layer (inspired by stigmergy/pheromone patterns)
+- **Memory as infrastructure**: File system is the persistence layer
 - **AGENTS.md standard**: Compatible with 8+ AI agents via the Linux Foundation Agentic AI Foundation standard
+- **Monorepo aware**: Scans workspace packages and generates per-workspace commands
 - **Idempotent**: Never overwrites existing files; safe to re-run
 - **Zero dependencies**: Pure Node.js, no external packages required
-- **Self-contained**: No remote downloads at runtime
+- **Signal system opt-in**: Task coordination via `--signals` for advanced multi-agent workflows
 
 ## License
 
