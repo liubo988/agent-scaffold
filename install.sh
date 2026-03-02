@@ -6,13 +6,13 @@
 #   bash install.sh
 #
 #   # One-liner (replace with your repo URL):
-#   bash <(curl -fsSL https://raw.githubusercontent.com/<OWNER>/agent-scaffold/main/install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/liubo988/agent-scaffold/main/install.sh)
 
 set -euo pipefail
 
 SKILL_NAME="agent-scaffold"
 SKILL_DIR="${HOME}/.claude/skills/${SKILL_NAME}"
-REPO_URL="${AGENT_SCAFFOLD_REPO:-https://github.com/<OWNER>/agent-scaffold.git}"
+REPO_URL="${AGENT_SCAFFOLD_REPO:-https://github.com/liubo988/agent-scaffold.git}"
 
 log() { echo "[${SKILL_NAME}] $*"; }
 err() { echo "[${SKILL_NAME}] ERROR: $*" >&2; exit 1; }
@@ -42,8 +42,8 @@ else
   # Running via curl pipe — clone the repo
   log "Installing from remote: ${REPO_URL}"
 
-  if echo "$REPO_URL" | grep -q '<OWNER>'; then
-    err "Please set AGENT_SCAFFOLD_REPO or replace <OWNER> in install.sh with your GitHub username/org."
+  if echo "$REPO_URL" | grep -q 'liubo988'; then
+    err "Please set AGENT_SCAFFOLD_REPO or replace liubo988 in install.sh with your GitHub username/org."
   fi
 
   if ! command -v git &>/dev/null; then

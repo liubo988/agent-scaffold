@@ -26,7 +26,7 @@ your-project/
 ### Option A: Clone + symlink (recommended)
 
 ```bash
-git clone https://github.com/<OWNER>/agent-scaffold.git ~/agent-scaffold
+git clone https://github.com/liubo988/agent-scaffold.git ~/agent-scaffold
 bash ~/agent-scaffold/install.sh
 ```
 
@@ -35,7 +35,7 @@ This creates a symlink at `~/.claude/skills/agent-scaffold`, so `git pull` updat
 ### Option B: Direct clone to skill directory
 
 ```bash
-git clone https://github.com/<OWNER>/agent-scaffold.git ~/.claude/skills/agent-scaffold
+git clone https://github.com/liubo988/agent-scaffold.git ~/.claude/skills/agent-scaffold
 ```
 
 ### Team rollout
@@ -43,7 +43,7 @@ git clone https://github.com/<OWNER>/agent-scaffold.git ~/.claude/skills/agent-s
 Share this command with your team:
 
 ```bash
-git clone https://github.com/<OWNER>/agent-scaffold.git ~/.claude/skills/agent-scaffold
+git clone https://github.com/liubo988/agent-scaffold.git ~/.claude/skills/agent-scaffold
 ```
 
 Everyone who runs this will have the skill available in all their Claude Code sessions.
