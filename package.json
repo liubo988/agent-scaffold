@@ -19,7 +19,7 @@
     "url": "https://github.com/liubo988/agent-scaffold.git"
   },
   "bin": {
-    "agent-scaffold": "./bin/agent-scaffold.mjs"
+    "agent-scaffold": "bin/agent-scaffold.mjs"
   },
   "files": [
     "bin/",
