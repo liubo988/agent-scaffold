@@ -42,8 +42,8 @@ else
   # Running via curl pipe — clone the repo
   log "Installing from remote: ${REPO_URL}"
 
-  if echo "$REPO_URL" | grep -q 'liubo988'; then
-    err "Please set AGENT_SCAFFOLD_REPO or replace liubo988 in install.sh with your GitHub username/org."
+  if echo "$REPO_URL" | grep -q '<OWNER>'; then
+    err "Please set AGENT_SCAFFOLD_REPO env var, e.g.: AGENT_SCAFFOLD_REPO=https://github.com/you/agent-scaffold.git bash install.sh"
   fi
 
   if ! command -v git &>/dev/null; then

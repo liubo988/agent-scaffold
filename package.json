@@ -1,0 +1,32 @@
+{
+  "name": "agent-scaffold",
+  "version": "1.0.0",
+  "description": "AI agent collaboration infrastructure initializer. Sets up CLAUDE.md, AGENTS.md, memory, signals, and decision logs for any project.",
+  "keywords": [
+    "ai-agent",
+    "claude",
+    "codex",
+    "agents-md",
+    "scaffold",
+    "memory",
+    "stigmergy",
+    "cross-session"
+  ],
+  "license": "MIT",
+  "author": "liubo988",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/liubo988/agent-scaffold.git"
+  },
+  "bin": {
+    "agent-scaffold": "./bin/agent-scaffold.mjs"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "references/",
+    "SKILL.md",
+    "install.sh"
+  ],
+  "type": "module"
+}
